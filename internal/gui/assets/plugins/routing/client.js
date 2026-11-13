@@ -308,10 +308,155 @@ function routingPage(part) {
     purposePick.focus({ preventScroll: true });
   };
   filters.append(dayBar, groupBar);
-  colA.append(reqHead, filters, reqs);
+  // the list's columns named over it, for a reader new to the page: what
+  // each part of a request's row is. Its columns are the rows' own
+  // (fitCols hands it --rt-cols); in a layout with fewer than the four
+  // the names would not sit over their parts, so it is left out (CSS)
+  const colHead = el("div", "rt-req-cols");
+  colHead.setAttribute("aria-hidden", "true");
+  const colNames = ["Time", "From · model asked for", "Where it was sent", "Time taken · usage"].map((k) => {
+    const s = el("span");
+    s.dataset.label = k;
+    colHead.append(s);
+    return s;
+  });
+  colA.append(reqHead, filters, colHead, reqs);
   colB.append(actHead, acts, actFoot);
   hist.append(colA, colB);
   more.append(hist);
+
+  // ---------- where requests go ----------
+
+  // Over the stage: each agent (or each session) on the left, and on the
+  // right every account, key or provider magpie sent its requests to,
+  // with how many went there and how they ended. The stage tells one
+  // request's story and the list one request a row; this card is the
+  // answer to "who is routed where" at a glance. It counts the requests
+  // the list shows (listed), reads each one's outcome as its row does
+  // (rowSays), and a click on a destination picks the newest request
+  // sent there, so the stage shows how it went.
+  const flow = el("section", "rt-flow");
+  flow.id = "rtFlow";
+  flow.hidden = true;
+  const flowHead = el("div", "rt-flow-head"), flowTitle = el("b"), flowSub = el("span", "note"), flowBy = el("div", "rt-flow-by");
+  const flowCols = el("div", "rt-flow-cols"), flowBody = el("div", "rt-flow-body");
+  const flowMore = el("button", "text rt-flow-more");
+  flowMore.type = "button";
+  const FLOW_MOST = 6;
+  let flowMode = "agent", flowAll = false, flowSig = "";
+  try { if (localStorage.getItem("magpie.routingFlowBy") === "session") flowMode = "session"; } catch {}
+  const flowButtons = [["agent", "Grouped by agent"], ["session", "By session"]].map(([on, label]) => {
+    const b = el("button", "rt-flow-pill");
+    b.type = "button";
+    b.dataset.label = label;
+    b.dataset.by = on;
+    b.onclick = () => {
+      flowMode = on;
+      try { localStorage.setItem("magpie.routingFlowBy", on); } catch {}
+      steady(() => renderFlow(listed()));
+    };
+    flowBy.append(b);
+    return b;
+  });
+  flowMore.onclick = () => { flowAll = !flowAll; steady(() => renderFlow(listed())); };
+  const flowColNames = ["Sent by", "Where it was sent", "Requests", "How it ended"].map((k) => {
+    const s = el("span");
+    s.dataset.label = k;
+    flowCols.append(s);
+    return s;
+  });
+  flowHead.append(flowTitle, flowSub, el("span", "grow"), flowBy);
+  flow.append(flowHead, flowCols, flowBody, flowMore);
+  box.before(flow);
+  function renderFlow(rs) {
+    flow.hidden = !rs.length;
+    if (!rs.length) { flowSig = ""; return; }
+    const bySess = flowMode === "session";
+    const srcs = new Map();
+    for (const r of rs) {
+      const said = rowSays(r), how = said.how;
+      const tr = said.tr || r.tries[r.tries.length - 1], w = tr && tried(r, tr);
+      const sk = bySess ? sessionKey(r) || "\u0001" : r.agent || "other";
+      let src = srcs.get(sk);
+      if (!src) srcs.set(sk, src = { key: sk, r, n: 0, sessions: new Set(), dests: new Map() });
+      src.n++;
+      if (groupSession(r)) src.sessions.add(sessionKey(r));
+      const model = tr?.model || w?.model || "";
+      const dk = w ? w.id + "\u0001" + model : "\u0001" + (r.provider || "");
+      let d = src.dests.get(dk);
+      // rs is newest first: r here is the newest request sent this way
+      if (!d) src.dests.set(dk, d = { w, name: w ? who(w) : r.provider || "—", model, n: 0, bad: 0, moved: 0, wait: 0, gone: 0, r });
+      d.n++;
+      if (how === "bad") d.bad++; else if (how === "gone") d.gone++; else if (how === "wait") d.wait++; else if (how === "moved") d.moved++;
+    }
+    let list = [...srcs.values()];
+    const srcName = (src) => {
+      if (!bySess) return agentName(src.r.agent);
+      if (!groupSession(src.r)) return t("No session ID");
+      const mine = rs.filter((r) => sessionKey(r) === src.key);
+      const title = (mine.find((r) => r.sessionTitle)?.sessionTitle || otherTitles.get(ownKey(src.r)) || "").replace(/\s+/g, " ").trim();
+      return [agentName(src.r.agent), title || mine.find((r) => r.folder)?.folder || groupSession(src.r)].join(" · ");
+    };
+    for (const src of list) src.name = srcName(src);
+    // by agent in the agents' names' order, so a row keeps its place as
+    // requests come in; by session the one that sent last is first
+    if (!bySess) list.sort((a, b) => a.name.localeCompare(b.name));
+    const total = list.length;
+    if (!flowAll) list = list.slice(0, FLOW_MOST);
+    const lang = document.documentElement.lang;
+    const sig = JSON.stringify([lang, flowMode, flowAll, total, list.map((src) => [src.key, src.name, src.n, src.sessions.size, agentOf(src.r.agent)?.icon,
+      [...src.dests.values()].map((d) => [d.name, d.model, d.n, d.bad, d.moved, d.wait, d.gone, d.w && logoOf(d.w), d.r.id])])]);
+    if (sig === flowSig) return;
+    flowSig = sig;
+    setText(flowTitle, t("Where requests go"));
+    setText(flowSub, t("who sent them, and where magpie sent each"));
+    flowButtons.forEach((b) => {
+      setText(b, t(b.dataset.label));
+      b.classList.toggle("on", flowMode === b.dataset.by);
+      b.setAttribute("aria-pressed", String(flowMode === b.dataset.by));
+    });
+    flowColNames.forEach((s) => setText(s, t(s.dataset.label)));
+    const rows = list.map((src) => {
+      const row = el("div", "rt-flow-src");
+      const from = el("div", "from"), sw = el("i", "ag"), nm = el("b", "", src.name);
+      sw.style.setProperty("--agent", hueOf(srcOf(src.r)));
+      nm.title = src.name;
+      const head = el("span", "who");
+      head.append(sw, icon(agentOf(src.r.agent)?.icon || "generic"), nm);
+      const bits = [t(src.n === 1 ? "{n} request" : "{n} requests", { n: src.n })];
+      if (!bySess && src.sessions.size) bits.push(t(src.sessions.size === 1 ? "{n} session" : "{n} sessions", { n: src.sessions.size }));
+      from.append(head, el("small", "", bits.join(" · ")));
+      const to = el("div", "to");
+      for (const d of [...src.dests.values()].sort((a, b) => b.n - a.n)) {
+        const b = el("button", "rt-flow-dst" + (d.bad ? " bad" : d.wait ? " wait" : ""));
+        b.type = "button";
+        b.title = t("Show the latest request sent here");
+        b.onclick = () => steady(() => pick(d.r)); // the stage below is drawn again: the page stays where it is
+        const to1 = el("span", "fto");
+        to1.append(el("span", "arrow", "→"), ...(d.w ? [icon(logoOf(d.w))] : []), el("span", "fnm", d.name), ...(d.model ? [el("code", "", d.model)] : []));
+        const bar = el("span", "bar"), fill = el("i");
+        fill.style.width = Math.max(4, Math.round(d.n * 100 / src.n)) + "%";
+        bar.append(fill);
+        const says = [];
+        if (d.bad) says.push(t("{n} failed", { n: d.bad }));
+        if (d.wait) says.push(t("{n} in progress", { n: d.wait }));
+        if (d.gone) says.push(t("{n} stopped by the agent", { n: d.gone }));
+        if (d.moved) says.push(t("{n} after another account failed", { n: d.moved }));
+        if (!says.length) says.push(t("all answered"));
+        const count = el("span", "fn");
+        count.append(bar, el("b", "", fmtN(d.n)));
+        const res = el("span", "fres", says.join(" · "));
+        res.title = says.join(" · ");
+        b.append(to1, count, res);
+        to.append(b);
+      }
+      row.append(from, to);
+      return row;
+    });
+    flowBody.replaceChildren(...rows);
+    flowMore.hidden = total <= FLOW_MOST;
+    setText(flowMore, flowAll ? t("Show fewer") : t("Show all {n}", { n: total }));
+  }
   // the narrow and wide layouts go by a box's own width, as container
   // queries would, set here as a class (max560: 560px wide or less). Not
   // by container queries: with query containers in it, WebKit pulled the
@@ -4186,6 +4331,9 @@ function routingPage(part) {
     if (!shown()) return; // drawn by resume()'s renderAll, as the stage
     const rs = listed();
     renderStats(rs);
+    renderFlow(rs);
+    colNames.forEach((x) => setText(x, t(x.dataset.label)));
+    colHead.hidden = !rs.length;
     const all = allListed();
     hist.hidden = !all.length && !day && !days.length && !purpose.length;
     const opts = purposeOptions([...all.map((r) => purposeOf(r.kind)), ...purpose]);
@@ -4414,6 +4562,9 @@ function routingPage(part) {
       px[w.length === 4 ? 2 : w.length - 1] = "minmax(0, 1fr)";
       reqs.style.setProperty("--rt-cols", px.join(" "));
     }
+    const cols = reqs.style.getPropertyValue("--rt-cols");
+    if (cols) colHead.style.setProperty("--rt-cols", cols); else colHead.style.removeProperty("--rt-cols");
+    colHead.classList.toggle("few", w.length !== 4);
     redrawList(); // the rows' heights measured in the columns before are dropped (listKey)
     if (!inMetaFit) metaFit(); // new columns, not metaFit's own: whether the numbers fit asked again
   };
