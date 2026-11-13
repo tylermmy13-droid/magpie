@@ -1203,3 +1203,25 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
 .rt-req-cols span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-req-cols span:last-child { text-align: right; }
 .rt-req-cols[hidden], .rt-req-cols.few, .rt-col.max760 .rt-req-cols, .rt-col.meta-under .rt-req-cols { display: none; }
+
+/* Readability, the Routing page: nothing a reader has to read is under
+   12px, the quiet text has more contrast, and a request's row is a size
+   up with more room. The rows, their probes and the sizer that measures
+   their columns share one size, so the columns stay the rows' own. */
+#view-routing { --muted: color-mix(in srgb, var(--fg) 60%, var(--bg)); }
+#view-routing .row-head { height: 30px; }
+#view-routing .row-head .label { font-size: 13px; }
+#view-routing .row-head .note, #view-routing .rt-acts-usage { font-size: 12px; }
+#view-routing .rt-what { font-size: 14px; }
+#view-routing .rt-mode, #view-routing .rt-steps li, #view-routing .rt-log-head { font-size: 13px; }
+#view-routing .rt-cap { font-size: 13.5px; }
+#view-routing .rt-stats { font-size: 12px; }
+#view-routing .rt-node small { font-size: 12px; }
+#view-routing :is(.rt-req, .rt-probe, .rt-sizer, .rt-session) { font-size: 13px; }
+#view-routing .rt-req { padding-top: 7px; padding-bottom: 7px; }
+#view-routing :is(.rt-req, .rt-probe) code, #view-routing .rt-flow-dst code, #view-routing .rt-accts b code.mdl, #view-routing .rt-act code.mdl { font-size: 12px; }
+#view-routing .rt-act { font-size: 12.5px; }
+#view-routing .rt-act .tally span { font-size: 12px; }
+#view-routing .rt-flow-cols, #view-routing .rt-req-cols { font-size: 12px; }
+#view-routing .rt-flow-src .from small { font-size: 12px; }
+#view-routing .rt-flow-head b { font-size: 14px; }
