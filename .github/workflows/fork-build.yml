@@ -1,0 +1,73 @@
+name: Fork build (macOS app)
+
+# This fork's own build of the Mac app, since upstream's Release workflow
+# hands off to yetone/magpie-releases with secrets a fork doesn't have.
+# Run by hand (Actions > Fork build > Run workflow) or by a push to main
+# that touches the app's code: it builds magpie.app natively on a macOS
+# runner for Apple silicon and for Intel, signs each ad hoc (no Developer
+# ID: the first open needs Gatekeeper's leave), and publishes both zips as
+# a release of this fork named for the commit. The version is git's own
+# (a bare commit hash), which is no release version, so the app never
+# updates itself to upstream's build (update.Released).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/gui/assets/**'
+      - 'build/**'
+      - 'Makefile'
+      - '.github/workflows/fork-build.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-build
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    if: github.repository != 'yetone/magpie'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build magpie.app for each chip
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for arch in arm64 amd64; do
+            make clean
+            GOARCH=$arch CGO_ENABLED=1 make app
+            codesign --force --deep --sign - magpie.app
+            codesign --verify --deep magpie.app
+            [ "$arch" = arm64 ] && name=apple-silicon || name=intel
+            ditto -c -k --keepParent magpie.app "out/magpie-mac-$name.zip"
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-mac
+          path: out/*.zip
+
+      - name: Publish as this fork's release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="fork-$(git rev-parse --short HEAD)"
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" out/*.zip --target "$GITHUB_SHA" \
+            --title "Fork build $tag" \
+            --notes "This fork's own build of the Mac app at $GITHUB_SHA. Not signed with a Developer ID. It keeps its files in ~/.config/magpie, as an installed magpie does."
