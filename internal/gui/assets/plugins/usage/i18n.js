@@ -2,6 +2,11 @@
 // kernel adds them to i18n.js's (magpie.strings).
 magpie.strings({
   zh: {
+    "Simple view": "简洁",
+    "Detailed view": "详细",
+    "Columns shown": "列",
+    "The columns a request is read by: who sent it, where it went, what it used and cost": "读懂一个请求需要的列：谁发的、去了哪里、用了多少、花了多少",
+    "Every column: the model sent and served, the effort, the cache, the first token and the speed too": "全部列：还包括发送与实际的模型、推理强度、缓存、首字耗时和速度",
     "Model speed": "模型速度",
     "Medians of the answered requests that wrote {n} tokens or more": "写出 {n} 个及以上 token 的已完成请求的中位数",
     "Set price…": "设置价格…",
@@ -271,6 +276,11 @@ magpie.strings({
     "Sent upstream as {to}, as the agent spoke it": "以 {to} 协议发往上游，与 agent 所用协议相同",
   },
   "zh-TW": {
+    "Simple view": "簡潔",
+    "Detailed view": "詳細",
+    "Columns shown": "欄",
+    "The columns a request is read by: who sent it, where it went, what it used and cost": "讀懂一個請求需要的欄：誰發的、去了哪裡、用了多少、花了多少",
+    "Every column: the model sent and served, the effort, the cache, the first token and the speed too": "全部欄：還包括傳送與實際的模型、推理強度、快取、首字耗時和速度",
     "Model speed": "模型速度",
     "Medians of the answered requests that wrote {n} tokens or more": "寫出 {n} 個及以上 token 的已完成請求的中位數",
     "Set price…": "設定價格…",
@@ -540,6 +550,11 @@ magpie.strings({
     "Sent upstream as {to}, as the agent spoke it": "以 {to} 協議發往上游，與 agent 所用協議相同",
   },
   ja: {
+    "Simple view": "シンプル",
+    "Detailed view": "詳細",
+    "Columns shown": "列",
+    "The columns a request is read by: who sent it, where it went, what it used and cost": "リクエストを読むための列：誰が送り、どこへ行き、どれだけ使い、いくらかかったか",
+    "Every column: the model sent and served, the effort, the cache, the first token and the speed too": "すべての列：送信・応答モデル、推論強度、キャッシュ、最初のトークン、速度も表示",
     "Model speed": "モデルの速度",
     "Medians of the answered requests that wrote {n} tokens or more": "{n} トークン以上を出力した完了リクエストの中央値",
     "Set price…": "価格を設定…",
@@ -809,6 +824,11 @@ magpie.strings({
     "Sent upstream as {to}, as the agent spoke it": "エージェントと同じ {to} で上流へ送信",
   },
   de: {
+    "Simple view": "Einfach",
+    "Detailed view": "Ausführlich",
+    "Columns shown": "Spalten",
+    "The columns a request is read by: who sent it, where it went, what it used and cost": "Die Spalten, mit denen man eine Anfrage liest: wer sie gesendet hat, wohin sie ging, was sie verbraucht und gekostet hat",
+    "Every column: the model sent and served, the effort, the cache, the first token and the speed too": "Alle Spalten: auch gesendetes und antwortendes Modell, Effort, Cache, erstes Token und Geschwindigkeit",
     "Model speed": "Modelltempo",
     "Medians of the answered requests that wrote {n} tokens or more": "Mediane der beantworteten Anfragen mit mindestens {n} Tokens",
     "Set price…": "Preis festlegen…",

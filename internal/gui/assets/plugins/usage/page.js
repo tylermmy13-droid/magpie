@@ -2776,6 +2776,37 @@ const ledNoSpeed_ = (r) => {
 };
 const ledFloorSpeed = (r) => { const f = ledFloor_(r); return f ? f.n / (f.w / 1000) : 0; };
 
+// Simple or Detailed, picked over the table and kept in this browser
+// (magpie.ledgerView): Simple, which a new reader gets, shows who sent a
+// request, the model it asked for, where it went, its tokens, cost, time
+// and status; the model sent and served, the effort, the cache's columns,
+// the first token and the speed are Detailed's, and in each row's details
+// either way. The columns are left out by app.css (.led-wrap.simple), so
+// the table is built the same and a click on a row opens the same details.
+let ledSimple = true;
+try { ledSimple = localStorage.getItem("magpie.ledgerView") !== "detailed"; } catch {}
+function ledViewDraw() {
+  const box = $("#ledView"), wrap = $("#ledWrap");
+  if (!box || !wrap) return;
+  wrap.classList.toggle("simple", ledSimple);
+  box.setAttribute("aria-label", t("Columns shown"));
+  box.replaceChildren(...[[true, "Simple view", "The columns a request is read by: who sent it, where it went, what it used and cost"], [false, "Detailed view", "Every column: the model sent and served, the effort, the cache, the first token and the speed too"]].map(([on, name, tip]) => {
+    const b = el("button", "led-view-pill" + (ledSimple === on ? " on" : ""), t(name));
+    b.type = "button";
+    b.title = t(tip);
+    b.setAttribute("aria-pressed", String(ledSimple === on));
+    b.onclick = () => {
+      if (ledSimple === on) return;
+      ledSimple = on;
+      try { localStorage.setItem("magpie.ledgerView", on ? "simple" : "detailed"); } catch {}
+      ledViewDraw();
+      ledFit();
+      ledHScroll();
+    };
+    return b;
+  }));
+}
+
 // the table as wide as the window, when leaving out what the row's details
 // say anyway makes it so: else it scrolls sideways (#799)
 function ledFit() {
@@ -3047,6 +3078,8 @@ function renderLedger() {
 
   const wrap = $("#ledWrap");
   const pager = $("#ledPager");
+  ledViewDraw();
+  $("#ledView").hidden = !l.total;
   if (!l.total) {
     wrap.classList.add("none");
     const filtered = ledPurpose || ledDay || ledRoute || ledAgent || ledProvider || ledAccount || ledComputer || ledCallerKey || ledModel || ledVia || ledFailed || ledRetried || ledQuery.trim();

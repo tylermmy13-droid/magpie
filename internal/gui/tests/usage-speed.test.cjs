@@ -112,6 +112,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the reporter's window: 1220×973 at 125%
         const ctx = await browser.newContext({ viewport: { width: 975, height: 778 }, reducedMotion: "reduce" });
         const p = await ctx.newPage();
+        // every column: Simple, the view a new reader gets, leaves out the ones this is about
+        await p.addInitScript(() => localStorage.setItem("magpie.ledgerView", "detailed"));
         p.setDefaultTimeout(5000);
         p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));

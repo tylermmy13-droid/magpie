@@ -63,6 +63,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // machine, whose narrower fonts failed the check below (#1340)
         const ctx = await browser.newContext({ viewport: { width: 600, height: 640 }, reducedMotion: "reduce" });
         const p = await ctx.newPage();
+        // every column: Simple, the view a new reader gets, leaves out the ones this is about
+        await p.addInitScript(() => localStorage.setItem("magpie.ledgerView", "detailed"));
         p.setDefaultTimeout(5000);
         p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));

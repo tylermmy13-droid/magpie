@@ -5347,3 +5347,15 @@ body .row.agent .ag-prefs .row.pref .who { display: block; }
 body.linux .modal, body.linux .pop, body.linux.panel .profiles.open,
 body.linux:not(.side-nav) #view-settings .set-head::before,
 body.linux .action-confirm::backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+
+/* Usage › Requests, Simple (ledViewDraw in plugins/usage/page.js): the
+   model sent and served, the effort, the cache's three columns, the first
+   token and the speed are left out, by their place in LED_COLS */
+.led-view { display: inline-flex; gap: 6px; flex: none; }
+.led-view[hidden] { display: none; }
+.led-view-pill { font: inherit; font-size: 12px; color: var(--muted); padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; background: none; white-space: nowrap; cursor: pointer; }
+.led-view-pill:hover { color: var(--fg); }
+.led-view-pill.on { color: var(--fg); border-color: var(--fg); }
+.led-wrap.simple .led :is(th, td.lc-opt, td.lc-opt2, td):is(:nth-child(5), :nth-child(6), :nth-child(7), :nth-child(10), :nth-child(11), :nth-child(12), :nth-child(14), :nth-child(16)):not([colspan]) { display: none; }
+.led-wrap.simple .led { width: 100%; }
+.led-wrap.simple .led th, .led-wrap.simple .led td { padding-top: 9px; padding-bottom: 9px; }

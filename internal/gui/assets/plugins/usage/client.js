@@ -101,7 +101,7 @@ magpie.plugin("usage", (ctx) => {
       <div class="heat-foot"></div>
       <div class="heat-tip" id="ledHeatTip" hidden></div>
     </section>
-    <div class="led-head"><p class="led-sum" id="ledSum"></p><span class="grow"></span><span class="led-arch" id="ledArchive"></span></div>
+    <div class="led-head"><p class="led-sum" id="ledSum"></p><span class="grow"></span><span class="led-view" id="ledView" role="group"></span><span class="led-arch" id="ledArchive"></span></div>
     <div class="led-strip led-vias" id="ledVia" hidden></div>
     <div class="led-wrap" id="ledWrap"></div>
             <div class="led-hscroll" id="ledHScroll" hidden><div></div></div>

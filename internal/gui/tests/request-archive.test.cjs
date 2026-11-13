@@ -98,6 +98,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const w = words[lang];
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       const page = await (await browser.newContext({ viewport: { width: 1000, height: 760 }, reducedMotion: "reduce" })).newPage();
+      // every column: Simple, the view a new reader gets, leaves out the ones this is about
+      await page.addInitScript(() => localStorage.setItem("magpie.ledgerView", "detailed"));
       t.after(() => browser.close());
       page.setDefaultTimeout(5000);
       page.setDefaultNavigationTimeout(60000);

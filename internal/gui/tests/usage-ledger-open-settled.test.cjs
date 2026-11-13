@@ -55,6 +55,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     t.after(() => browser.close());
     // motion on: the sidebar moves as the reporter's does
     const p = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
+    // every column: Simple, the view a new reader gets, leaves out the ones this is about
+    await p.addInitScript(() => localStorage.setItem("magpie.ledgerView", "detailed"));
     p.setDefaultTimeout(5000);
     p.setDefaultNavigationTimeout(60000);
     const errors = [];

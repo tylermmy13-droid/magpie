@@ -122,6 +122,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [];
         const ctx = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
         const p = await ctx.newPage();
+        // every column: Simple, the view a new reader gets, leaves out the ones this is about
+        await p.addInitScript(() => localStorage.setItem("magpie.ledgerView", "detailed"));
         p.setDefaultTimeout(5000);
         p.setDefaultNavigationTimeout(60000);
         p.on("pageerror", (e) => errors.push(e.message));
