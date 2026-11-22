@@ -119,8 +119,10 @@ func TestSettingsCLISetsWhatTheWindowSaves(t *testing.T) {
 			t.Errorf("no page sends %q as %s to %s any more: send it in a save of POST /api/settings, or name the call that saves it", k, own.field, own.call)
 		}
 	}
+	// These upstream settings are available through the CLI in the fork.
+	cliOnly := []string{"accent", "name", "trayAnthropicMark", "totalCurrency", "trayCurrency", "claudeNoExtraUsage", "claudeRegionHold", "imageResolution"}
 	for _, k := range settingsapi.Keys {
-		if _, own := ownRoute[k]; !own && !slices.Contains(gui, k) {
+		if _, own := ownRoute[k]; !own && !slices.Contains(gui, k) && !slices.Contains(cliOnly, k) {
 			t.Errorf("`magpie settings` sets %q, which no page sends", k)
 		}
 	}

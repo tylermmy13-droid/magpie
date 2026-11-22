@@ -5,6 +5,8 @@
 const I18N = {
   zh: {
     "Cards": "卡片",
+    "deepseek-v4.1-flash tokens": "deepseek-v4.1-flash token",
+    "The routings besides Quota first: In order, Until used up, In turn, Least used first, Use before expiry, By weight, Free first, Speed first and Cheapest first": "额度优先以外的路由方式：按顺序、用完再换、轮流、用量少的优先、到期前用完、按权重、免费优先、速度优先和最便宜优先",
     "Claude plugins": "Claude 插件",
     "Table": "表格",
     "Quick check": "快速检测",
@@ -5159,6 +5161,8 @@ const I18N = {
   },
   "zh-TW": {
     "Cards": "卡片",
+    "deepseek-v4.1-flash tokens": "deepseek-v4.1-flash token",
+    "The routings besides Quota first: In order, Until used up, In turn, Least used first, Use before expiry, By weight, Free first, Speed first and Cheapest first": "額度優先以外的路由方式：按順序、用完再換、輪流、用量少的優先、到期前用完、按權重、免費優先、速度優先和最便宜優先",
     "Claude plugins": "Claude 外掛",
     "Table": "表格",
     "Quick check": "快速檢測",
@@ -10298,6 +10302,8 @@ const I18N = {
   },
   ja: {
     "Cards": "カード",
+    "deepseek-v4.1-flash tokens": "deepseek-v4.1-flash のトークン",
+    "The routings besides Quota first: In order, Until used up, In turn, Least used first, Use before expiry, By weight, Free first, Speed first and Cheapest first": "枠優先以外のルーティング：順番、使い切ってから次へ、交互、使用量が最少のものを優先、期限前に使い切る、重み付け、無料優先、速度優先、最安優先",
     "Claude plugins": "Claude プラグイン",
     "Table": "表",
     "Quick check": "クイックチェック",
@@ -15439,6 +15445,8 @@ const I18N = {
   },
   de: {
     "Cards": "Karten",
+    "deepseek-v4.1-flash tokens": "deepseek-v4.1-flash-Token",
+    "The routings besides Quota first: In order, Until used up, In turn, Least used first, Use before expiry, By weight, Free first, Speed first and Cheapest first": "Die Routings neben Kontingent zuerst: Der Reihe nach, Bis aufgebraucht, Abwechselnd, Am wenigsten genutzte zuerst, Vor Ablauf aufbrauchen, Nach Gewicht, Kostenlos zuerst, Schnellste zuerst und Günstigste zuerst",
     "Claude plugins": "Claude-Plugins",
     "Table": "Tabelle",
     "Quick check": "Schnelltest",

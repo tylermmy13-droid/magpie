@@ -242,6 +242,10 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.ImageResolution = "4K"                        // Settings > Images' Resolution row, sent by that row alone
 	was.RedactModelDir = "/Volumes/models"            // Privacy's Advanced › models folder, moved by its own route
 	was.Name = "Tokyo box"                            // Network and sharing's Advanced › Name, sent by its own row alone
+	// The fork keeps these upstream settings available through the CLI.
+	was.Accent = "#0d9488"
+	was.TotalCurrency, was.TrayCurrency = "cny", "cny"
+	was.ClaudeNoExtraUsage, was.ClaudeRegionHold, was.TrayAnthropicMark = true, true, true
 	// Settings > Usage's Bark row has its own route (settings/bark)
 	was.BarkServer, was.BarkKey, was.BarkDaily = "https://bark.example.com", "kept", "21:30"
 	// the Routing groups page's defaults for every group (groups/defaults)

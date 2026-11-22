@@ -250,6 +250,22 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["name"]; !sent {
 		in.Name = cur.Name
 	}
+	// Older pages omit the separate currencies and Claude settings.
+	if _, sent := fields["totalCurrency"]; !sent {
+		in.TotalCurrency = cur.TotalCurrency
+	}
+	if _, sent := fields["trayCurrency"]; !sent {
+		in.TrayCurrency = cur.TrayCurrency
+	}
+	if _, sent := fields["claudeNoExtraUsage"]; !sent {
+		in.ClaudeNoExtraUsage = cur.ClaudeNoExtraUsage
+	}
+	if _, sent := fields["claudeRegionHold"]; !sent {
+		in.ClaudeRegionHold = cur.ClaudeRegionHold
+	}
+	if _, sent := fields["trayAnthropicMark"]; !sent {
+		in.TrayAnthropicMark = cur.TrayAnthropicMark
+	}
 	// nor whether the loading bird is kept off
 	if _, sent := fields["noBird"]; !sent {
 		in.NoBird = cur.NoBird
