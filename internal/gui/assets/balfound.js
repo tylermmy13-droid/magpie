@@ -36,7 +36,7 @@ window.balFoundShow = function (r) {
   line.hidden = !line.dataset.show || !!(draft.balanceURL || "").trim();
   if (miss) {
     const none = el("span", "", t("Not detected"));
-    none.title = t("magpie asked this relay where relays tell a key its balance, and found none. Put in a Balance URL of your own, or detect again");
+    none.title = t("No balance endpoint was found for this relay. Enter a Balance URL or try detection again.");
     const again = el("button", "text action", t("Detect again"));
     again.type = "button";
     again.onclick = () => document.querySelector(".editor .bal-check")?.click();
@@ -45,10 +45,10 @@ window.balFoundShow = function (r) {
   }
   if (!r.found) return;
   const txt = el("span", "", t("Found by magpie: {url}", { url: r.found + (r.foundField ? " " + r.foundField : "") }));
-  txt.title = t("magpie asked this relay where relays tell a key its balance, and reads it here. If the amount is wrong, put in your own Balance URL and field; magpie looks again each day");
+  txt.title = t("magpie reads this key’s balance from the detected endpoint and checks for it daily. If the amount is wrong, enter your own Balance URL and field.");
   const use = el("button", "text action", t("Use"));
   use.type = "button";
-  use.title = t("Put this query in the Balance URL and Balance field, to change it");
+  use.title = t("Copy the detected URL and field so you can edit them");
   use.onclick = () => {
     draft.balanceURL = bal.value = r.found;
     draft.balancePath = r.foundField || "";

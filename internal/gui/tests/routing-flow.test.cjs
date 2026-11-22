@@ -61,8 +61,8 @@ function serve(lang) {
 }
 
 const L = {
-  en: { title: "Where requests go", bySession: "By session", cols: ["Sent by", "Where it was sent", "Requests", "How it ended"], ok: "all answered", failed: "1 failed", moved: "1 after another account failed", head: ["Time", "From · model asked for", "Where it was sent", "Time taken · usage"] },
-  zh: { title: "请求去向", bySession: "按会话", cols: ["谁发的", "送到哪里", "请求", "结果"], ok: "全部成功", failed: "1 次失败", moved: "1 次是换线后送达", head: ["时间", "谁发的 · 请求的模型", "送到哪里", "用时 · 用量"] },
+  en: { title: "Where requests go", bySession: "By session", cols: ["Request source", "Routing destination", "Requests", "Routing outcome"], ok: "all answered", failed: "1 failed", moved: "1 after another account failed", head: ["Time", "Source · requested model", "Routing destination", "Duration · usage"] },
+  zh: { title: "请求去向", bySession: "按会话", cols: ["来源", "去向", "请求", "结果"], ok: "全部成功", failed: "1 次失败", moved: "1 次是换线后送达", head: ["时间", "请求来源 · 请求的模型", "去向", "耗时 · 用量"] },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {

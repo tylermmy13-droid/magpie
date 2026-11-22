@@ -45,7 +45,7 @@ const drift = (page, ms) => page.evaluate((ms) => new Promise((done) => {
 const sizes = [
   { name: "wide", width: 1200, height: 760 },
   { name: "narrow", width: 760, height: 760, side: true },
-  { name: "short", width: 1200, height: 460 },
+  { name: "short", width: 1200, height: 460, over: true },
   // too short for the whole list: the foot scrolls, its end in sight
   { name: "tiny", width: 1200, height: 340, over: true },
 ];
@@ -90,7 +90,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         return r.top >= f.top - 0.5 && r.bottom <= f.bottom + 0.5;
       });
       assert.ok(await inSight("#prefs"), "the button is in sight");
-      const over = await page.locator(".side-foot").evaluate((f) => f.scrollHeight > f.clientHeight + 1);
+      const foot = page.locator(".side-foot");
+      const height = (await foot.boundingBox()).height;
+      assert.ok(height <= Math.max(260, size.height / 2) + 1, `Settings leaves room for the main navigation: ${height}px`);
+      const over = await foot.evaluate((f) => f.scrollHeight > f.clientHeight + 1);
       assert.equal(over, !!size.over, "the foot scrolls only when the list can't fit");
       if (!size.over) assert.ok(await inSight(".nav-s.cur"), "the open tab is in sight");
 

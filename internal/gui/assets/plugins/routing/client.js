@@ -314,7 +314,7 @@ function routingPage(part) {
   // the names would not sit over their parts, so it is left out (CSS)
   const colHead = el("div", "rt-req-cols");
   colHead.setAttribute("aria-hidden", "true");
-  const colNames = ["Time", "From · model asked for", "Where it was sent", "Time taken · usage"].map((k) => {
+  const colNames = ["Time", "Source · requested model", "Routing destination", "Duration · usage"].map((k) => {
     const s = el("span");
     s.dataset.label = k;
     colHead.append(s);
@@ -359,7 +359,7 @@ function routingPage(part) {
     return b;
   });
   flowMore.onclick = () => { flowAll = !flowAll; steady(() => renderFlow(listed())); };
-  const flowColNames = ["Sent by", "Where it was sent", "Requests", "How it ended"].map((k) => {
+  const flowColNames = ["Request source", "Routing destination", "Requests", "Routing outcome"].map((k) => {
     const s = el("span");
     s.dataset.label = k;
     flowCols.append(s);
@@ -409,7 +409,7 @@ function routingPage(part) {
     if (sig === flowSig) return;
     flowSig = sig;
     setText(flowTitle, t("Where requests go"));
-    setText(flowSub, t("who sent them, and where magpie sent each"));
+    setText(flowSub, t("Request sources and destinations"));
     flowButtons.forEach((b) => {
       setText(b, t(b.dataset.label));
       b.classList.toggle("on", flowMode === b.dataset.by);
@@ -430,7 +430,7 @@ function routingPage(part) {
       for (const d of [...src.dests.values()].sort((a, b) => b.n - a.n)) {
         const b = el("button", "rt-flow-dst" + (d.bad ? " bad" : d.wait ? " wait" : ""));
         b.type = "button";
-        b.title = t("Show the latest request sent here");
+        b.title = t("Open the latest request to this destination");
         b.onclick = () => steady(() => pick(d.r)); // the stage below is drawn again: the page stays where it is
         const to1 = el("span", "fto");
         to1.append(el("span", "arrow", "→"), ...(d.w ? [icon(logoOf(d.w))] : []), el("span", "fnm", d.name), ...(d.model ? [el("code", "", d.model)] : []));
