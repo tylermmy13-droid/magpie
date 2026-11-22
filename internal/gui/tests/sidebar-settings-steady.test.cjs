@@ -13,13 +13,13 @@ const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(process.env.MAGPIE_ASSETS || path.resolve(__dirname, "../assets"));
 
-function serve(lang) {
+function serve(lang, theme) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
-    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:"light",web:false,sideGateway:{url:"http://127.0.0.1:3425",running:true,boot:true}};` });
+    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:${JSON.stringify(theme)},web:false,sideGateway:{url:"http://127.0.0.1:3425",running:true,boot:true}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
-    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme: "light" } });
+    if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme } });
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { url: "http://127.0.0.1:3425", running: true, window: true } });
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname.startsWith("/api/")) return json({});
@@ -63,8 +63,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultNavigationTimeout(60000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", serve(lang));
-      await page.goto("http://magpie.test/");
+      await page.route("**/*", serve(lang, lang === "zh" ? "dark" : "light"));
+      await page.goto("http://magpie.test/?view=providers");
       await page.waitForSelector("#nav button.on");
       assert.ok(await page.evaluate(() => document.body.classList.contains("side-nav")), "the sidebar shows");
       const prefs = page.locator("#side .side-foot #prefs");
@@ -93,9 +93,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const foot = page.locator(".side-foot");
       const height = (await foot.boundingBox()).height;
       assert.ok(height <= Math.max(260, size.height / 2) + 1, `Settings leaves room for the main navigation: ${height}px`);
-      const over = await foot.evaluate((f) => f.scrollHeight > f.clientHeight + 1);
-      assert.equal(over, !!size.over, "the foot scrolls only when the list can't fit");
-      if (!size.over) assert.ok(await inSight(".nav-s.cur"), "the open tab is in sight");
+      const card = foot.locator(".nav-sub:not(.leaving)");
+      const styles = await card.evaluate((el) => {
+        const css = getComputedStyle(el);
+        const active = getComputedStyle(el.querySelector(".nav-hl"));
+        return { radius: parseFloat(css.borderRadius), surface: css.backgroundColor, selected: active.backgroundColor, scroll: el.scrollHeight > el.clientHeight + 1 };
+      });
+      assert.ok(styles.radius >= 8 && styles.selected !== styles.surface, "Settings has a rounded card and a distinct selection");
+      assert.equal(styles.scroll, !!size.over, "the Settings card scrolls only when its tabs do not fit");
+      assert.ok(await inSight(".nav-s.cur"), "the open tab is in sight");
 
       // a tab picked there: the button still where it was
       await page.locator(".nav-s[data-of=setTab-network]").click();
@@ -103,8 +109,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.ok((await drift(page, 300)) < 1, "picking a tab leaves the button put");
       assert.ok(Math.abs((await prefs.boundingBox()).y - before.y) < 1);
 
-      // another page: the list folds away and the button never moved
-      await page.locator('#nav button[data-view="agents"]').click();
+      // The same button closes Settings and returns to the previous page.
+      await page.mouse.click(before.x + before.width / 2, before.y + before.height / 2);
+      await page.locator("#view-providers").waitFor({ timeout: 1500 });
       const closing = await drift(page, 600);
       await page.waitForFunction(() => !document.querySelector(".nav-sub"));
       assert.ok(closing < 1, `the button moved ${closing}px while the list folded`);

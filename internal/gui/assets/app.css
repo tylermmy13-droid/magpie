@@ -397,6 +397,9 @@ body.side-nav { --side-w: 212px; padding-left: var(--side-w); }
 .sidebar {
   position: fixed; left: 0; top: 0; bottom: 0; z-index: 10; width: var(--side-w);
   display: flex; flex-direction: column;
+  --nav-warm: #d97757;
+  --nav-selection: color-mix(in srgb, var(--nav-warm) 13%, var(--card));
+  --nav-selection-edge: color-mix(in srgb, var(--nav-warm) 32%, var(--line));
   background: var(--bg); border-right: .5px solid var(--line);
 }
 /* its edge drags it wider or narrower, as a Mac app's sidebar's does
@@ -457,7 +460,7 @@ body.side-nav :is(#nav button[data-view], #prefs).on { background: var(--card); 
    sub-rows', a row hovered or pressed has no ground of its own, which
    would lie over the shape as it comes */
 .nav-top-hl { display: none; }
-body.side-nav #nav > .nav-top-hl:not([hidden]) { display: block; position: absolute; z-index: 0; top: 0; left: 0; right: 0; height: 30px; border-radius: 7px; background: var(--card); box-shadow: var(--seg-edge); pointer-events: none; will-change: transform; }
+body.side-nav #nav > .nav-top-hl:not([hidden]) { display: block; position: absolute; z-index: 0; top: 0; left: 0; right: 0; height: 30px; border-radius: 7px; background: var(--nav-selection); box-shadow: inset 0 0 0 1px var(--nav-selection-edge); pointer-events: none; will-change: transform; }
 body.side-nav #side #nav.hl-on button[data-view]:is(.on, :hover, :active) { background: transparent; box-shadow: none; }
 body.side-nav #nav.hl-on button[data-view] { transition: color .22s var(--ease); }
 body.side-nav #nav.hl-on button[data-view] .nav-ic { transition: color .22s var(--ease); }
@@ -481,8 +484,22 @@ body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3
 .nav-sl { position: relative; z-index: 1; padding: 8px 10px 2px; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: var(--muted); white-space: nowrap; }
 .nav-sl:first-of-type { padding-top: 2px; }
 /* Keep room for the main navigation while Settings' tabs are open. */
-.side-foot > .nav-sub { margin: 6px 0 2px 16px; }
-.side-foot:has(> .nav-sub) { max-height: min(80%, max(260px, 50%)); border-top: 1px solid var(--line); background: var(--card); }
+.side-foot:has(> .nav-sub) { max-height: min(80%, max(260px, 50%)); }
+.side-foot > .nav-sub {
+  flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  margin: 4px 0 6px; padding: 4px 6px; border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 94%, var(--pill));
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.side-foot > .nav-sub.moving { overflow: hidden; }
+.side-foot > .nav-sub::before { display: none; }
+.side-foot > .nav-sub .nav-hl { left: 6px; right: 6px; }
+.side-foot .nav-s.cur { font-weight: 600; }
+.side-foot .nav-hl {
+  background: var(--nav-selection);
+  box-shadow: inset 0 0 0 1px var(--nav-selection-edge);
+}
 .nav-sub::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 1px; background: var(--line); }
 /* rows keep their size while the list unrolls or folds: squeezed, a strip
    drawn again then (Installed gets its count) marked the selection a third
@@ -570,7 +587,7 @@ body.side-nav .top, body.window.mac.side-nav .top { padding-left: 20px; }
 body.side-nav .crumb { display: flex; align-items: baseline; gap: 7px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 13.5px; }
 .crumb > span { color: var(--muted); }
 .crumb > i { font-style: normal; color: var(--faint); }
-.crumb > b { font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.crumb > b { font-weight: 650; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 body.side-nav :is(#usageTab, #view-library .lib-tabs, #view-plugins .lib-tabs, #setTabs) { display: none !important; }
 /* the sidebar's button (app.js toggleSideNav), in the title bar where a Mac
    app has it: the drawing's left pane filled while the sidebar shows */
@@ -2295,6 +2312,10 @@ body.panel .foot { min-height: 0; padding: 5px 8px 7px 14px; border-top: 1px sol
 .profiles .chips .hint { line-height: 30px; }
 .row-head { display: flex; align-items: center; height: 26px; }
 .label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+body.window :is(#view-providers, #view-routing, #view-usage, #view-gateway, #view-settings) .row-head .label {
+  color: var(--fg-2); font-size: 12px; letter-spacing: 0; text-transform: none;
+}
+body.window :is(#view-providers, #view-routing, #view-usage, #view-gateway) .row-head .note { color: var(--muted); }
 /* several accounts: the button opening the ones in brief, in the head */
 .subscription-card .quota-more { margin: -4px -7px -4px auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--muted); }
 .subscription-card .quota-more:hover { color: var(--fg); }

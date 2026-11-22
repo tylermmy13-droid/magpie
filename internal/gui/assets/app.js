@@ -80,7 +80,7 @@ if (window.bootPrefs) setLocale(window.bootPrefs.lang);
 let state = { agents: [], profiles: [], catalog: "", settings: {} };
 let prefs = null; // the settings page: theme, lang, version, dir, gateway
 let providers = null; // { providers, presets, gateway }
-let view = "agents";
+let view = "agents", settingsFrom = view;
 let backTo = null, jumpNext = false; // Back (jumpFrom)
 let showAllAgents = false; // the agents no one has set anything on, folded away
 let showHiddenAgents = false; // under them, the ones hidden by hand: a fold of their own, shut until asked
@@ -23256,6 +23256,7 @@ async function show(v) {
     magpie.call(view, "leave");
   }
   if (v !== view && !jump) backTo = null;
+  if (v === "settings" && v !== view) settingsFrom = view;
   view = v;
   renderBack();
   window.hideAccounts?.page();
@@ -23499,7 +23500,10 @@ async function openSettingsAt(e, tab, row) {
   void row.offsetWidth; // the light goes again on a second click
   row.classList.add("flash");
 }
-$("#prefs").onclick = () => { openSettings(); $("#prefs").blur(); };
+$("#prefs").onclick = (e) => {
+  if (view === "settings") show(settingsFrom); else openSettings();
+  if (e.detail) e.currentTarget.blur();
+};
 
 // The header's refresh reads again what the page shown draws (#844)
 function refreshKind() {
