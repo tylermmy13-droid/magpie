@@ -80,8 +80,8 @@ var gatewayBusy = func() gateway.Busy {
 	return gateway.Busy{}
 }
 
-// waitRecheck asks the feed again before the restart (updater.recheck),
-// asked when a click armed the wait.
+// waitRecheck is updater.recheck before the restart, asked when a click
+// armed the wait: the feed is asked only with nothing downloaded waiting.
 var waitRecheck = (*updater).recheck
 
 // idleAt is whether b leaves nothing for a restart at now to cut short.
@@ -97,7 +97,7 @@ func (u *updater) idle() bool { return idleAt(restartBusy(), time.Now()) }
 // (Restart to update), not Settings' AutoRestart's.
 func (u *updater) waitIdle(restart func() bool, asked bool) {
 	u.mu.Lock()
-	u.whenIdle, u.gaveUp, u.waitAsked = restart, false, asked
+	u.whenIdle, u.gaveUp, u.waitAsked, u.waitNow = restart, false, asked, false
 	if !u.waiting {
 		u.drainMost = 0
 	}
@@ -186,12 +186,12 @@ func (u *updater) waitFor(gen int) {
 			last = b
 			u.told()
 		}
-		if !idleAt(b, time.Now()) {
+		u.mu.Lock()
+		asked, now := u.waitAsked, u.waitNow
+		u.mu.Unlock()
+		if !now && !idleAt(b, time.Now()) {
 			continue
 		}
-		u.mu.Lock()
-		asked := u.waitAsked
-		u.mu.Unlock()
 		if !asked && inUseAt(time.Now()) {
 			continue
 		}
@@ -203,7 +203,9 @@ func (u *updater) waitFor(gen int) {
 		switch st := u.json().State; {
 		case in:
 		case st == "ready":
-			// a newer version out since is downloaded first, and waited for
+			// the version downloaded and waiting is gone into as it is;
+			// with none (another magpie put it in), the feed is asked
+			// (recheck)
 			waitRecheck(u, asked)
 			if u.asking() || u.json().State != "ready" {
 				continue
@@ -255,10 +257,9 @@ func (u *updater) autoTick(s settings.Settings) {
 
 // restartAsked is the tray's Restart to update, restart doing it. With the
 // gateway busy it waits for it to be idle (#577), and a click while it
-// waits restarts at once. The feed is asked first, as the page's restart
-// asks it (coeo91 on Discord: the tray restarted into the version the
-// last check found): a newer version out since is downloaded, and the
-// restart waits for it.
+// waits restarts at once. It goes through recheck as the page's restart
+// does: the version downloaded and waiting is restarted into as it is,
+// and only with none is the feed asked first (coeo91 on Discord).
 func (u *updater) restartAsked(restart func() bool) {
 	if waiting, _ := u.waitingFor(); !waiting && !u.idle() {
 		u.waitIdle(restart, true)

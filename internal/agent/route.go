@@ -377,6 +377,8 @@ func buildModels(agent string) []catalog.Model {
 		_, ms, _ := find(id)
 		return ms
 	}
+	// the models Codex's accounts offer Ultrafast on, read once a list
+	ultra := sync.OnceValue(provider.UltraModels)
 	for i, e := range shown {
 		efforts := e.Efforts
 		if agent == "codex" {
@@ -384,7 +386,10 @@ func buildModels(agent string) []catalog.Model {
 			// word on included (provider.CodexEfforts)
 			efforts = provider.CodexEfforts(e)
 		}
-		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: efforts, Images: e.Images || seen, ImageInput: e.ImageInput, Context: e.Context, Output: e.Output, OutputSet: e.OutputSet, AgentsV2: e.AgentsV2, Reasoning: e.Thinks(),
+		// the kinds the model's source listed (a video, say), which an
+		// agent that can send them is told of (zcodeInputs, #5098)
+		inputs, outputs := e.Modalities()
+		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: efforts, Images: e.Images || seen, ImageInput: e.ImageInput, InputModalities: inputs, OutputModalities: outputs, Context: e.Context, Output: e.Output, OutputSet: e.OutputSet, AgentsV2: e.AgentsV2, Reasoning: e.Thinks(),
 			AlwaysThinks: e.AlwaysThinks, DynamicTools: e.DynamicTools, DefaultEffort: e.DefaultEffort}
 		// where Codex and Claude Code compact it (#876): a threshold the
 		// user set on the model or on its provider, else a window they
@@ -426,7 +431,7 @@ func buildModels(agent string) []catalog.Model {
 		// the service tiers Codex is offered on it, as the gateway's own
 		// lists offer them: Fast in the Codex CLI magpie writes
 		// magpie-models.json for (#1530)
-		provider.CodexTiers(&m, e, members)
+		provider.CodexTiersWith(&m, e, members, ultra)
 		if agent == "codex" {
 			provider.CodexSeals(&m, e, members)
 		}

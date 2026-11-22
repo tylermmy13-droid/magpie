@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/yetone/magpie/internal/gwmw"
+
 	"github.com/yetone/magpie/internal/filememo"
 )
 
@@ -95,6 +97,10 @@ type GatewayContext struct {
 	// x-openai-subagent), and "" for any other: the main conversation,
 	// and a client that doesn't say. Per request, never per session.
 	Kind string `json:"kind"`
+	// Caller is the agent the request came from, through any magpies that
+	// passed it on (gwmw.Caller, chat.headers' input.caller); nil, and
+	// absent from ctx, when no agent is known. Agent stays agentOf's.
+	Caller *gwmw.Caller `json:"caller,omitempty"`
 }
 
 // GatewayState is aggregate diagnostics for this host's lifetime. Outcomes
@@ -247,14 +253,8 @@ func GatewayBegin(ctx context.Context, body []byte, info GatewayContext) *Gatewa
 	checkList()
 	// Provider discovery may already be starting the shared host. Wait within
 	// the same hook budget rather than skipping recall on the first request.
-	wait := time.NewTicker(10 * time.Millisecond)
-	defer wait.Stop()
-	for !hostMu.TryLock() {
-		select {
-		case <-start.Done():
-			return nil
-		case <-wait.C:
-		}
+	if hostMu.LockCtx(start) != nil {
+		return nil
 	}
 	if start.Err() != nil {
 		hostMu.Unlock()
@@ -355,14 +355,8 @@ func GatewaySignIn(ctx context.Context, ev SignInEvent) {
 		start, cancelStart := context.WithTimeout(ctx, gatewayStart)
 		defer cancelStart()
 		checkList()
-		wait := time.NewTicker(10 * time.Millisecond)
-		defer wait.Stop()
-		for !hostMu.TryLock() {
-			select {
-			case <-start.Done():
-				return
-			case <-wait.C:
-			}
+		if hostMu.LockCtx(start) != nil {
+			return
 		}
 		h, err := getLocked(start)
 		hostMu.Unlock()

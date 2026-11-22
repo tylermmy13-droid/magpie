@@ -16,6 +16,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -55,6 +56,12 @@ type RequestPage struct {
 	Series   []SeriesPoint
 	By       map[string][]Share
 	ChartBy  map[string][]Share // the whole period's legend while a day is selected
+	// AgentModels is each agent's By["modelAt"], by the agent a filter
+	// names it by (ReportedAs): what the same page with that agent picked
+	// would have as its By["modelAt"], counted in the same pass. A day's
+	// card asked for a page of each agent beside the day's own, a whole
+	// build each, every time the day was switched (WaiooT on X).
+	AgentModels map[string][]Share
 	// Computers are the rows told apart by the computer they were made on,
 	// ThisComputer's and each other's by id, of the rows without the
 	// filter's computer, and Names what the others are called: none when no
@@ -64,6 +71,9 @@ type RequestPage struct {
 	// Speeds are the models of the rows the filter keeps, ranked by the
 	// median speed of their requests (speed_rank.go)
 	Speeds []ModelSpeed
+	// ProviderSpeeds are the same rows' models on each provider they were
+	// tried on: speed, first token, and how the tries went (speed_rank.go)
+	ProviderSpeeds []ProviderSpeed
 	// Heat is the rows by day, as the chart's filter keeps them: only for
 	// the heatmap's own period (HeatmapOf)
 	Heat *Heatmap
@@ -93,16 +103,20 @@ type packedRow struct {
 	Sent, Flow, FirstReasoning int32
 	Own, Retried, Queued       int32
 	Masking                    int32 // ms (Record.Masking)
-	Status                     int32
-	// Tries and ImageFiles in 16 bits, so the row is no larger than its
-	// 152 bytes before the count was kept: neither comes near 32767
-	// (smallOf)
-	Tries, ImageFiles int16
 	// the bytes up and down (Record.UpBytes, DownBytes, ImageFilesSaved),
 	// in 32 bits as Masking: 2GiB is past any request a vendor takes
 	UpBytes, DownBytes, FilesSaved int32
-	Flags                          uint16
-	zone                           uint16
+	// Status and ImageFiles in 16 bits, and Tries in 8, so the row is no
+	// larger than its 152 bytes before the counts and upMix were kept:
+	// no status passes 32767, no request 32767 images or 255 tries
+	// (smallOf, tinyOf)
+	Status, ImageFiles int16
+	Flags              uint16
+	zone               uint16
+	Tries              uint8
+	// upMix is Record.UpParts, each part's share of UpBytes in 255ths
+	// (upMixOf), where Flags has rowUpParts
+	upMix [3]uint8
 }
 
 // rowZones are the zones rows' times are in, by a row's zone; 0 is the
@@ -227,6 +241,26 @@ const rowCacheUnknown = 8192
 // rowSocket is the Flags bit of Record.Socket.
 const rowSocket = 16384
 
+// rowUpParts marks a row that kept what its bytes up were made of
+// (Record.UpParts, packedRow.upMix).
+const rowUpParts = 32768
+
+// upMixOf is u's parts as shares of up in 255ths, for a packed row: a
+// part rounds to the nearest 255th of the request, so the sums of many
+// rows stay within a fraction of a percent.
+func upMixOf(u *UpParts, up int) (m [3]uint8) {
+	for i, n := range [3]int{u.System, u.Tools, u.Images} {
+		m[i] = uint8(min(max((n*255+up/2)/up, 0), 255))
+	}
+	return m
+}
+
+// upPartsOf is what upMixOf kept, as bytes of up.
+func upPartsOf(m [3]uint8, up int) *UpParts {
+	part := func(i int) int { return up * int(m[i]) / 255 }
+	return &UpParts{System: part(0), Tools: part(1), Images: part(2)}
+}
+
 type rowChunk struct {
 	Archive   []byte
 	Locations []*time.Location
@@ -266,13 +300,13 @@ type rowChunk struct {
 // rowMsg is the Text of a row's Claude message id, after rowText's, and
 // rowError its error's
 const (
-	rowMsg   = 36
+	rowMsg   = 37
 	rowError = 9
 	// rowClient is the Text of the client's own name, when the user counts
 	// it as another agent (Row.Client, #1958)
 	rowClient = 33
 	// rowTexts is how many strings a row has: rowText's and the message id
-	rowTexts = 37
+	rowTexts = 38
 )
 
 // rowVaried are the strings that differ call by call: the error, the
@@ -338,8 +372,8 @@ func (c *rowChunk) shape(t [rowTexts]uint32) uint32 {
 // reason ("Upstream stop reason", #1927) and the service tiers (#1784)
 // among them: a string left out comes back empty from the cache, in the
 // page and in /v1/magpie/usage/requests (TestRowTextHoldsEveryString)
-func rowText(r *Row) [36]*string {
-	return [36]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client, &r.CallerIssuerID, &r.ClientIP}
+func rowText(r *Row) [37]*string {
+	return [37]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client, &r.CallerIssuerID, &r.ClientIP, &r.Wire}
 }
 func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	if c.dict == nil {
@@ -356,7 +390,7 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 		c.Bytes += int64(len(s) + 48)
 		return id
 	}
-	p := packedRow{Tokens: [6]int32{tokensOf(int64(r.Input)), tokensOf(int64(r.Output)), tokensOf(int64(r.CacheRead)), tokensOf(int64(r.CacheWrite)), tokensOf(int64(r.Reasoning)), tokensOf(int64(r.CacheWrite1h))}, Millis: msOf(r.Millis), TTFT: msOf(r.TTFT), FirstText: msOf(r.FirstText), FirstReasoning: msOf(r.FirstReasoning), Sent: msOf(r.Sent), Flow: msOf(r.Flow), Own: msOf(r.Own), Masking: int32(min(r.Masking, math.MaxInt32)), Retried: msOf(r.Retried), Queued: msOf(r.Queued), Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: smallOf(r.Tries), ImageFiles: smallOf(r.ImageFiles), UpBytes: bytesOf(r.UpBytes), DownBytes: bytesOf(r.DownBytes), FilesSaved: bytesOf(r.ImageFilesSaved)}
+	p := packedRow{Tokens: [6]int32{tokensOf(int64(r.Input)), tokensOf(int64(r.Output)), tokensOf(int64(r.CacheRead)), tokensOf(int64(r.CacheWrite)), tokensOf(int64(r.Reasoning)), tokensOf(int64(r.CacheWrite1h))}, Millis: msOf(r.Millis), TTFT: msOf(r.TTFT), FirstText: msOf(r.FirstText), FirstReasoning: msOf(r.FirstReasoning), Sent: msOf(r.Sent), Flow: msOf(r.Flow), Own: msOf(r.Own), Masking: int32(min(r.Masking, math.MaxInt32)), Retried: msOf(r.Retried), Queued: msOf(r.Queued), Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: smallOf(r.Status), Tries: tinyOf(r.Tries), ImageFiles: smallOf(r.ImageFiles), UpBytes: bytesOf(r.UpBytes), DownBytes: bytesOf(r.DownBytes), FilesSaved: bytesOf(r.ImageFilesSaved)}
 	p.setTime(r.Time)
 	var t [rowTexts]uint32
 	for i, s := range rowText(&r) {
@@ -387,6 +421,10 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	}
 	if r.Socket {
 		p.Flags |= rowSocket
+	}
+	if r.UpParts != nil && p.UpBytes > 0 {
+		p.Flags |= rowUpParts
+		p.upMix = upMixOf(r.UpParts, int(p.UpBytes))
 	}
 	if failed {
 		p.Flags |= 16
@@ -435,12 +473,20 @@ func smallOf(n int) int16 {
 	return int16(max(min(n, math.MaxInt16), 0))
 }
 
+// tinyOf is a count of tries in a packed row's 8 bits, as smallOf.
+func tinyOf(n int) uint8 {
+	return uint8(max(min(n, math.MaxUint8), 0))
+}
+
 func (c *rowChunk) row(i int) Row {
 	p := &c.Rows[i]
 	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time(), Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: int64(p.Millis), TTFT: int64(p.TTFT), FirstText: int64(p.FirstText), FirstReasoning: int64(p.FirstReasoning), ReasoningHidden: p.Flags&rowReasoningHidden != 0, CacheUnknown: p.Flags&rowCacheUnknown != 0, Socket: p.Flags&rowSocket != 0, Sent: int64(p.Sent), Flow: int64(p.Flow), Own: int64(p.Own), Masking: int64(p.Masking), Retried: int64(p.Retried), Queued: int64(p.Queued), Status: int(p.Status), Tries: int(p.Tries), UpBytes: int(p.UpBytes), DownBytes: int(p.DownBytes), ImageFilesSaved: int(p.FilesSaved), ImageFiles: int(p.ImageFiles), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
 	if p.Flags&rowCredits != 0 {
 		credits := p.Credits
 		r.Credits = &credits
+	}
+	if p.Flags&rowUpParts != 0 && p.UpBytes > 0 {
+		r.UpParts = upPartsOf(p.upMix, int(p.UpBytes))
 	}
 	if p.Flags&rowCompactionKnown != 0 {
 		compacted := p.Flags&rowCompaction != 0
@@ -749,11 +795,10 @@ type requestIndex struct {
 	// pairs are the last pairing of each of a few periods (pairMemo),
 	// kept as parts are
 	pairs map[Period]*pairMemo
-	// on are the paths the last read listed; unsaved counts the chunks
-	// made since the file of them was last written (toDisk), and saving
-	// says a write is under way; unsavedRows counts their rows, and
-	// savedRows says a write was made for them (once a run)
-	on          map[string]bool
+	// unsaved counts the chunks made since the file of them was last
+	// written (toDisk), and saving says a write is under way; unsavedRows
+	// counts their rows, and savedRows says a write was made for them
+	// (once a run)
 	unsaved     int
 	unsavedRows int
 	saving      bool
@@ -875,7 +920,7 @@ func readRequestState(now time.Time) requestState {
 	cfg := settings.Load()
 	prices, _ := json.Marshal(cfg.ModelPrices)
 	wires, _ := json.Marshal(cfg.Wires())
-	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey(), clearedKey())
+	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path())+provider.KeyRatesKey(), "asked:"+catalogBase(), clientAgentsKey(), clearedKey())
 	h := sha256.New()
 	for _, current := range provider.All() {
 		fmt.Fprintf(h, "%q:%q:%v:%t:%t:%t;", current.ID, current.Where(), current.Catalogs(), current.IsPlugin(), current.Account == nil, current.Key != "")
@@ -1478,14 +1523,13 @@ func (idx *requestIndex) keep(read *requestIndex, on map[string]bool) bool {
 // requestDiskLeast files. Once, as a session still at work grows with
 // every call and is made again for each. idx is locked.
 func (idx *requestIndex) noteBuilt(b requestBlocks) {
-	idx.on = b.on
 	idx.unsaved += b.built
 	idx.unsavedRows += b.builtRows
 	if idx.unsaved >= requestDiskLeast {
-		idx.save()
+		idx.save(b.on)
 	} else if !idx.savedRows && idx.unsavedRows >= requestDiskLeastRows {
 		idx.savedRows = true
-		idx.save()
+		idx.save(b.on)
 	}
 }
 
@@ -1500,14 +1544,17 @@ var requestDiskSaves sync.WaitGroup
 var savingDisk func()
 
 // save writes the file of idx's chunks behind the lock: chunks are never
-// changed once made, so a copy of the map is enough. idx is locked.
-func (idx *requestIndex) save() {
+// changed once made, so a copy of the map is enough. on are the paths the
+// read listed: not kept on idx, where the set of every session file's
+// path (853 KB of a real history) outlived the chunks' forget. idx is
+// locked.
+func (idx *requestIndex) save(on map[string]bool) {
 	if idx.saving {
 		return
 	}
 	idx.saving = true
 	idx.unsaved, idx.unsavedRows = 0, 0 // a write that fails is tried again only for new chunks
-	root, meta, chunks, on := idx.root, idx.meta, maps.Clone(idx.chunks), idx.on
+	root, meta, chunks := idx.root, idx.meta, maps.Clone(idx.chunks)
 	requestDiskSaves.Add(1)
 	go func() {
 		defer requestDiskSaves.Done()
@@ -1585,12 +1632,21 @@ func (idx *requestIndex) trim(bound int64) {
 		}
 		return strings.Compare(a.path, b.path)
 	})
+	dropped := 0
 	for _, c := range kept {
 		if bytes <= bound {
 			break
 		}
 		delete(idx.chunks, c.path)
 		bytes -= c.row.Bytes
+		dropped++
+	}
+	// a map never gives back its table: the forget's trim(0) emptied the
+	// map of a real history and kept its 853 KB for the life of the process
+	if dropped > len(idx.chunks) {
+		rest := make(map[string]*rowChunk, len(idx.chunks))
+		maps.Copy(rest, idx.chunks)
+		idx.chunks = rest
 	}
 }
 
@@ -1602,35 +1658,86 @@ func visibleLocal(chunks []*rowChunk) refSet {
 	// the decoded chunk's string: a long history's ~400k ids held ~7MB of
 	// copies at the start's peak, and a key of these is a string header's
 	// size (msgKey).
-	// made to size, as many as the rows that can have an id (a Codex call
-	// has none): grown an id at a time, it was ~250 MB of a minute and a
-	// third of polls (#2278)
 	keys := msgKeysOf(chunks)
+	// a settled chunk's are read here, once, into one list (msgKeysOf
+	// keeps none of them)
+	var read []msgKey
+	var readAt []int // where each chunk's begin in read, for those of keys nil
 	n := 0
-	for _, k := range keys {
-		// a settled chunk's are read below: the set grows for them
+	for i, k := range keys {
 		if k != nil {
 			n += len(k.keys)
+			continue
 		}
+		if readAt == nil {
+			readAt = make([]int, len(chunks)+1)
+			rows := lentRows()
+			defer rows.release()
+			for j := i; j < len(chunks); j++ {
+				readAt[j] = len(read)
+				if keys[j] == nil {
+					read = appendMsgKeys(read, rows.of(chunks[j]))
+				}
+			}
+			readAt[len(chunks)] = len(read)
+		}
+		n += readAt[i+1] - readAt[i]
+	}
+	keysOf := func(i int) []msgKey {
+		if keys[i] != nil {
+			return keys[i].keys
+		}
+		return read[readAt[i]:readAt[i+1]]
 	}
 	seen := keptSeen.Swap(nil)
 	// judged by the chunks' rows, an upper bound n leaves the recent out of
 	need := rowsOfAll(chunks)
 	if seen == nil || !scratchFits(seen.made, need) {
-		seen = &seenScratch{ids: make(map[[2]uint64]struct{}, n)}
+		seen = &seenScratch{}
 	}
 	seen.made = max(seen.made, need)
 	defer keepSeen(seen)
-	rows := lentRows()
-	defer rows.release()
-	var read chunkMsgKeys
-	for i, c := range chunks {
-		k := keys[i]
-		if k == nil {
-			read.keys = appendMsgKeys(read.keys[:0], rows.of(c))
-			k = &read
+	// A set of every id was the largest thing a page's open held: ~24 MB
+	// for ~1M ids, beside the rows it pairs. Most ids are of one call, so
+	// a first pass marks the slot of each id's hash in a bit set, and the
+	// slots marked twice in another; an id whose slot was marked once is
+	// the only one of its hash, so of its id, and only the others go in
+	// the set: ~2 bits an id and a set of a few percent of them.
+	m := uint64(max(n, 1)) * 8
+	words := int((m + 63) / 64)
+	once, twice := sized(seen.once, words), sized(seen.twice, words)
+	seen.once, seen.twice = once, twice
+	slot := func(k msgKey) (int, uint64) {
+		b, _ := bits.Mul64(k.k, m)
+		return int(b >> 6), 1 << (b & 63)
+	}
+	for i := range chunks {
+		for _, k := range keysOf(i) {
+			w, bit := slot(k)
+			if once[w]&bit != 0 {
+				twice[w] |= bit
+			} else {
+				once[w] |= bit
+			}
 		}
-		for _, k := range k.keys {
+	}
+	candidates := 0
+	for i := range chunks {
+		for _, k := range keysOf(i) {
+			if w, bit := slot(k); twice[w]&bit != 0 {
+				candidates++
+			}
+		}
+	}
+	if candidates == 0 {
+		return duplicates
+	}
+	seen.ids = mapFor(seen.ids, candidates)
+	for i, c := range chunks {
+		for _, k := range keysOf(i) {
+			if w, bit := slot(k); twice[w]&bit == 0 {
+				continue
+			}
 			if _, ok := seen.ids[k.id()]; ok {
 				duplicates.add(rowRef{c, int(k.at)})
 			} else {
@@ -1641,16 +1748,17 @@ func visibleLocal(chunks []*rowChunk) refSet {
 	return duplicates
 }
 
-// keptSeen is visibleLocal's set of ids seen, kept empty for the next
-// call as matchScratch is: made to size for every pairing it was ~210 MB
-// of the ~2 GB 90 s of polls allocated (#2278). A cleared map keeps its
-// buckets.
+// keptSeen is visibleLocal's scratch, kept empty for the next call as
+// matchScratch is: made to size for every pairing it was ~210 MB of the
+// ~2 GB 90 s of polls allocated (#2278). A cleared map keeps its buckets.
 var keptSeen atomic.Pointer[seenScratch]
 
-// seenScratch is the set and the ids of the largest call it served.
+// seenScratch is the set, the bit sets and the rows of the largest call it
+// served.
 type seenScratch struct {
-	ids  map[[2]uint64]struct{}
-	made int
+	ids         map[[2]uint64]struct{}
+	once, twice []uint64
+	made        int
 }
 
 func keepSeen(seen *seenScratch) {
@@ -1927,6 +2035,7 @@ func ReleaseScratch() {
 	keptSeen.Store(nil)
 	releaseRows()
 	releasePriced()
+	releaseProbes()
 }
 
 // ReleaseMatchScratch is ReleaseScratch keeping the priced blocks.
@@ -1935,6 +2044,7 @@ func ReleaseMatchScratch() {
 	keptPicks.Store(nil)
 	keptSeen.Store(nil)
 	releaseRows()
+	releaseProbes()
 }
 
 // scratchLinger is how long the matcher's scratch is kept once the last
@@ -2491,6 +2601,8 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 		chartGroups[d] = map[string]*Share{}
 		seriesGroups[d] = map[string]*Share{}
 	}
+	agentModels := map[string]map[string]*Share{}
+	reported := map[string]string{} // ReportedAs, once for each agent
 	// Bound the requested prefix before adding limit: external offsets can
 	// reach MaxInt, and a page beyond all sources needs no heap at all.
 	maxRows := 0
@@ -2538,7 +2650,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	}
 	for _, part := range parts {
 		speeds.merge(part.speeds)
-		out.Big.merge(part.big)
+		out.Big.merge(part.bigWrite())
 		if !part.first.IsZero() && (first.IsZero() || part.first.Before(first)) {
 			first = part.first
 		}
@@ -2616,7 +2728,21 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 					add(chartGroups[dim], keys.key(&r, dim), d)
 				}
 				if cell.bits&(cellGroup<<j) != 0 {
-					add(groups[dim], keys.key(&r, dim), d)
+					k := keys.key(&r, dim)
+					add(groups[dim], k, d)
+					if j == modelAtDim {
+						a, ok := reported[agent]
+						if !ok {
+							a = ReportedAs(agent)
+							reported[agent] = a
+						}
+						m := agentModels[a]
+						if m == nil {
+							m = map[string]*Share{}
+							agentModels[a] = m
+						}
+						add(m, k, d)
+					}
 				}
 			}
 		}
@@ -2656,9 +2782,13 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	slices.Sort(out.Purposes)
 	out.CallerKeys = callerGroups(callers)
 	out.Accounts = callerGroups(accounts)
-	out.Speeds = speeds.result()
+	out.Speeds, out.ProviderSpeeds = speeds.result(), speeds.providers()
 	for _, d := range Dimensions {
 		out.By[d] = sharesOf(groups[d])
+	}
+	out.AgentModels = make(map[string][]Share, len(agentModels))
+	for a, m := range agentModels {
+		out.AgentModels[a] = sharesOf(m)
 	}
 	if f.Day != "" {
 		out.ChartBy = map[string][]Share{}
@@ -2724,6 +2854,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 			}
 		}
 	}
+	settle(out.Series)
 	return out
 }
 func pageFromLedger(p Period, f Filter, offset, limit int, all Ledgered) RequestPage {
@@ -2779,7 +2910,7 @@ func pageFromLedgerAt(p Period, f Filter, offset, limit int, all Ledgered, now t
 			out.Big.add(&r)
 		}
 	}
-	out.Speeds = speeds.result()
+	out.Speeds, out.ProviderSpeeds = speeds.result(), speeds.providers()
 	chartRows := l.Rows
 	if f.Day != "" {
 		chartFilter := f
@@ -2794,6 +2925,17 @@ func pageFromLedgerAt(p Period, f Filter, offset, limit int, all Ledgered, now t
 				add(r)
 			}
 		})
+	}
+	out.AgentModels = map[string][]Share{}
+	byAgent := map[string][]Row{}
+	for _, r := range all.Filtered(f.Without("modelAt")).Rows {
+		a := ReportedAs(r.Agent)
+		byAgent[a] = append(byAgent[a], r)
+	}
+	for a, rows := range byAgent {
+		if m := Breakdown(rows, "modelAt"); len(m) > 0 {
+			out.AgentModels[a] = m
+		}
 	}
 	for _, d := range Dimensions {
 		g := f.Without(d)

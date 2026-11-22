@@ -156,6 +156,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GitHubToken:          "ghp_kept",
 		RequestArchive:       true,
 		RequestArchiveMaxMB:  64,
+		RequestArchiveMB:     2048,
 		GatewayConversations: true,
 		QuotaLeft:            true,
 		UsageOrder:           []string{"kimi", "codex"},
@@ -173,6 +174,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexTitles:          "off",
 		CodexDescriptions:    "fake/m1",
 		CodexPredictions:     "off",
+		CodexSuggestions:     "fake/m1",
 		CodexAutoReview:      "fake/m1",
 		CodexSubagentModel:   "codex/gpt-6-astra",
 		CodexServiceTier:     "priority",
@@ -214,6 +216,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	}
 	was.RedactModelOff, was.RedactModelAuto = true, true
 	was.DesktopSubagentEffort = "high"
+	was.DesktopIsolatedClaude, was.DesktopIsolatedClaudeChosen = true, true
 	was.ReplyModel = settings.ReplyMember // memberModel, its mirror, is kept with it
 	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
 	was.ClaudeRunsMost = 3
@@ -226,12 +229,19 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	was.ProxyNames = map[string]string{"p1": "Office"}
 	was.ContextCap = 200000                           // its own route, POST /api/settings/context-cap
 	was.ContextCapAll = true                          // its own route, POST /api/settings/context-cap-mode
+	was.BareModelIDsOnly = true                       // its own route, POST /api/settings/bare-ids
 	was.SearcherThen = []string{"fake/m1", "fake/m2"} // set in its own row
 	was.RouterNote = "Los Angeles"                    // the Library's servers/hub-note
 	was.RouterAllTools = true                         // the Library's servers/hub-tools
+	was.RouterNoCode = true                           // the Library's servers/hub-code
 	was.BusyLoad = 150                                // the Routing page's busy-load
 	was.MTLS = true                                   // Network and sharing's settings/mtls
+	was.Wallpaper = 1700000000000                     // Settings > General's Background image, appearance/wallpaper
 	was.HTTPS = true                                  // Network and sharing's settings/https
+	was.OnTop = true                                  // the title bar's pin, window/ontop
+	was.ImageResolution = "4K"                        // Settings > Images' Resolution row, sent by that row alone
+	was.RedactModelDir = "/Volumes/models"            // Privacy's Advanced › models folder, moved by its own route
+	was.Name = "Tokyo box"                            // Network and sharing's Advanced › Name, sent by its own row alone
 	// Settings > Usage's Bark row has its own route (settings/bark)
 	was.BarkServer, was.BarkKey, was.BarkDaily = "https://bark.example.com", "kept", "21:30"
 	// the Routing groups page's defaults for every group (groups/defaults)

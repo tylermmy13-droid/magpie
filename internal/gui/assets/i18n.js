@@ -5,6 +5,7 @@
 const I18N = {
   zh: {
     "Cards": "卡片",
+    "Claude plugins": "Claude 插件",
     "Table": "表格",
     "Quick check": "快速检测",
     "Test all": "全部测试",
@@ -5158,6 +5159,7 @@ const I18N = {
   },
   "zh-TW": {
     "Cards": "卡片",
+    "Claude plugins": "Claude 外掛",
     "Table": "表格",
     "Quick check": "快速檢測",
     "Test all": "全部測試",
@@ -10296,6 +10298,7 @@ const I18N = {
   },
   ja: {
     "Cards": "カード",
+    "Claude plugins": "Claude プラグイン",
     "Table": "表",
     "Quick check": "クイックチェック",
     "Test all": "すべてテスト",
@@ -15436,6 +15439,7 @@ const I18N = {
   },
   de: {
     "Cards": "Karten",
+    "Claude plugins": "Claude-Plugins",
     "Table": "Tabelle",
     "Quick check": "Schnelltest",
     "Test all": "Alle testen",

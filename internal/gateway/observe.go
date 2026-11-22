@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"strings"
@@ -35,7 +34,7 @@ func observeRequest(r *http.Request, kind string, body []byte) (*http.Request, *
 	// the agent it is recorded as, another magpie's own (callerFrom)
 	agent := callerOf(r).agent
 	who := access.Caller(r.Context())
-	q := usage.Request{Header: r.Header, Agent: agent, Session: observedSession(r.Header), Kind: observedKind(agent, kind, body),
+	q := usage.Request{Header: r.Header, Agent: agent, Session: observedSession(r.Header), Kind: observedKind(claudeCodeAs(r, agent), kind, body),
 		Plain: local(r) && who.KeyID == "" && callerOf(r).via == ""}
 	o := &observed{keyName: who.KeyName}
 	for _, ob := range observers {
@@ -55,6 +54,15 @@ func observedSession(h http.Header) string {
 		return id
 	}
 	return sessionOf(h)
+}
+
+// claudeCodeAs is agent, or "claude" for Claude Code an app runs under its
+// own key (claudeCodeInside).
+func claudeCodeAs(r *http.Request, agent string) string {
+	if claudeCodeInside(r, agent) {
+		return "claude"
+	}
+	return agent
 }
 
 // Claude's tool-less small tasks (titles, suggestions, haiku helpers) may
@@ -90,7 +98,7 @@ func inferredKind(in http.Header, from provider.Protocol, body []byte) string {
 // your most recent action in 3-5 words."). The bytes are looked at first:
 // every request passes here.
 func agentSummaryAsk(body []byte) bool {
-	if !bytes.Contains(body, []byte("3-5 words")) {
+	if !bodyHas(body, "3-5 words") {
 		return false
 	}
 	req, err := parseAnthropic(body)

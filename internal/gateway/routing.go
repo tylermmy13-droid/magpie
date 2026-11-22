@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/egress"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/routes"
@@ -134,7 +135,7 @@ func plainUnavailable(c candidate, status int, body []byte) bool {
 	}
 	return failureOf(c, status, body) == failOther && !vendorOverloaded(status, body) &&
 		!modelRefused(status, body) && !codexReset(status, body) && !protectionRefused(status, body) &&
-		!bytes.Contains(body, []byte(didNotStream)) && refusalWords(status, body) != ""
+		!bodyHas(body, didNotStream) && refusalWords(status, body) != ""
 }
 
 // idRun is a run in an error's words that differs from one try to the
@@ -230,6 +231,7 @@ func clearRest(key string) {
 	if kept {
 		saveRests() // its rung starts over after a restart too
 	}
+	clearNotice(key) // it answered: its limit is over
 }
 
 // How long a candidate sits out, by why it failed.
@@ -569,13 +571,14 @@ func carriedStatus(status int, body []byte) int {
 // failure says why a reply failed.
 func failure(status int, body []byte) string {
 	status = carriedStatus(status, body)
-	if status == http.StatusBadGateway && (proxyDown.Match(body) || bytes.Contains(body, []byte(closedUnsentWords)) || bytes.Contains(body, []byte(stalledWords))) {
+	if status == http.StatusBadGateway && (proxyDown.Match(body) || bodyHas(body, closedUnsentWords) || bodyHas(body, stalledWords) || bodyHas(body, egress.HeldWords)) {
 		// the proxy didn't take the connection, or the network closed
 		// each new one before the request was sent (errClosedUnsent):
 		// nothing reached the vendor, and the account is as good as it
 		// was. Read as the account's failure, it rested ChatGPT accounts
 		// whose window was full till the window renewed, days off,
-		// shown as "502 · 失败" (dealyang_ on X)
+		// shown as "502 · 失败" (dealyang_ on X). A Claude request magpie
+		// held for its way out's region (egress.Hold) never left either
 		return failProxy
 	}
 	if _, ok := provider.Verification(body); ok && (status == 401 || status == 403) {
@@ -597,7 +600,7 @@ func failure(status int, body []byte) string {
 		// Kimi's "exceeded model token limit" is the conversation's
 		// length, not the plan's
 		return failOther
-	case status == 402 && usedUpWords.Match(body) && !creditWords.Match(body) && !bytes.Contains(body, []byte("insufficient_quota")):
+	case status == 402 && usedUpWords.Match(body) && !creditWords.Match(body) && !bodyHas(body, "insufficient_quota"):
 		// a 402 that says a usage limit and nothing of money is out of
 		// quota, not of credit: Factory's "You've reached your weekly
 		// standard usage limit (resets in …). Switch to Droid Core …" is
@@ -605,7 +608,7 @@ func failure(status int, body []byte) string {
 		// account out of credit it rested Droid Core with it (#1979)
 		return failQuota
 	case status == 402, creditWords.Match(body) && (status != 429 || brokeWords.Match(body)),
-		bytes.Contains(body, []byte("insufficient_quota")) && !minuteRate(body):
+		bodyHas(body, "insufficient_quota") && !minuteRate(body):
 		return failCredit
 	case status == 429 && resetsWhen.Match(body):
 		// out until the time it names, in whichever language it said so:
@@ -672,7 +675,7 @@ func dashScopeRate(p provider.Provider, status int, body []byte) bool {
 		return false
 	}
 	w := wordsOf(body)
-	if bytes.Contains(bytes.ToLower(w), []byte("free allocated quota")) || longWords.Match(urlWords.ReplaceAll(w, nil)) {
+	if bodyHas(bytes.ToLower(w), "free allocated quota") || longWords.Match(urlWords.ReplaceAll(w, nil)) {
 		return false
 	}
 	return dashScopeTokenRate.Match(w)
@@ -729,7 +732,7 @@ func grokBalanceOut(p provider.Provider, status int, body []byte) bool {
 // plugin puts it (provider.ZCodeRestrictedHint, plugins#348). magpie's own
 // words, which no vendor says, so they are read whoever answered.
 func restrictedSaid(status int, body []byte) bool {
-	return status >= 400 && (bytes.Contains(body, []byte(provider.WBRestrictedHint)) || bytes.Contains(body, []byte(provider.ZCodeRestrictedHint)))
+	return status >= 400 && (bodyHas(body, provider.WBRestrictedHint) || bodyHas(body, provider.ZCodeRestrictedHint))
 }
 
 // restrictedRefused says p's vendor restricted the account: magpie's words
@@ -741,7 +744,47 @@ func restrictedRefused(p provider.Provider, status int, body []byte) bool {
 	if restrictedSaid(status, body) {
 		return true
 	}
-	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body)) || googleSuspended(p, status, body)
+	return isWorkBuddy(p) && provider.WBRestricted(status, wordsOf(body)) || googleSuspended(p, status, body) || claudeAccountOff(p, status, body)
+}
+
+// claudeOffWords are Anthropic's, and Claude Code's, words for an account
+// that can serve nothing more: its organization disabled ("API Error: 400
+// {"type":"error","error":{"type":"invalid_request_error","message":"This
+// organization has been disabled."}}", Claude Code's errors page; the
+// same as a 403 permission_error), the claude.ai account put on hold
+// ("Your account is on hold and can't use Claude Code. View details or
+// appeal: https://claude.ai/restricted", account_on_hold), and an
+// organization that turned off Claude subscription sign-in for Claude
+// Code (oauth_org_not_allowed; the API's "OAuth authentication is
+// currently not allowed for this organization."), and a flagged account's
+// "Your account can't receive replies from Claude right now" (Claude's
+// apps show it as 「您的账户暂时无法接收 Claude 的回复」; RiverOnVenus on X
+// got 403s in a group with it; the English words are from a user's report,
+// not Anthropic's docs). Either apostrophe, or "cannot". None is about the
+// model or what was asked: the same request is served by another account.
+var claudeOffWords = lazyre.New(`(?i)this organization has been disabled|account is on hold and can(?:'|\x{2019}|no)t use Claude|organization has disabled Claude subscription access|OAuth authentication is currently not allowed for this organization|account can(?:'|\x{2019}|no)t receive (?:replies|responses) from Claude`)
+
+// claudeAccountOff says Anthropic turned p, a Claude subscription account
+// or a key on Anthropic's own API, off (claudeOffWords). Read as any
+// failure, a disabled account answered 400 and its group stopped there,
+// its next members never asked (Ramon317317 on X: a Claude account
+// flagged mid-use, and the group didn't move on); now it rests as one its
+// vendor restricted, until an appeal, and the request goes on to the
+// next member and the provider's other accounts (riskRefused leaves them
+// in). A relay's same words are about the relay's own account behind it,
+// and its other keys may still answer: read as any failure there.
+func claudeAccountOff(p provider.Provider, status int, body []byte) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	if a := p.Account; a != nil {
+		if a.Agent != "claude" {
+			return false
+		}
+	} else if provider.HostOf(p.Base(provider.Anthropic)) != "api.anthropic.com" {
+		return false
+	}
+	return claudeOffWords.Match(wordsOf(body))
 }
 
 // googleToS is Google's 403 PERMISSION_DENIED for a Code Assist account it
@@ -757,13 +800,28 @@ var googleToS = lazyre.New(`(?i)disabled in this account for violation of Terms 
 // refused, every ten minutes for good. Another vendor's same words are its
 // own, and aren't read so.
 func googleSuspended(p provider.Provider, status int, body []byte) bool {
-	if status != http.StatusForbidden {
-		return false
-	}
-	if a := accountAgent(p); a != "antigravity" && a != "gemini" {
+	if status != http.StatusForbidden || !googleSignIn(p) {
 		return false
 	}
 	return googleToS.Match(wordsOf(body))
+}
+
+// googleSignIn says p is signed in to Google's Code Assist with a Google
+// account: the built-in Antigravity or Gemini CLI account, or the
+// community plugin's that does the same, the Antigravity plugin's (OAuth)
+// or agy-cli's (Google's own agy program). A plugin account's Agent is
+// "plugin", so a suspended plugin account was read as an unknown failure
+// and asked again every few minutes (plugins#1148).
+func googleSignIn(p provider.Provider) bool {
+	switch accountAgent(p) {
+	case "antigravity", "gemini":
+		return true
+	}
+	switch p.PluginProvider() {
+	case "antigravity", "agy-cli":
+		return true
+	}
+	return false
 }
 
 // isWorkBuddy is whether p is a WorkBuddy account, either build's: the
@@ -805,7 +863,8 @@ type Rest struct {
 	// or is rate limited again as soon as it is back), "restricted" (the
 	// vendor restricted the account: two hours, or until lifted by hand),
 	// "off" (no rest: its provider is set not to rest after an unknown
-	// failure, provider.RestCapOff).
+	// failure, provider.RestCapOff), "suspended" (an Azure key that
+	// answered before refused 401: a day, or until its probe answers).
 	By       string `json:"by"`
 	Failures int    `json:"failures,omitempty"` // in a row, for a backoff
 	// Key is what it rests by, for the app to lift the rest (Unrest)
@@ -908,6 +967,7 @@ func restarted(agent, user string) {
 // full: those no vendor timed by renewed's word alone, and those it did
 // only by restarted's.
 func liftRests(agent, user string, vendorTill bool) {
+	defer saveDropped() // after the lock is let go
 	restingUntil.Lock()
 	defer restingUntil.Unlock()
 	now := time.Now()
@@ -915,7 +975,10 @@ func liftRests(agent, user string, vendorTill bool) {
 		if r.agent != agent || !strings.EqualFold(r.user, user) || !(r.Why == failQuota || r.By == "window" || r.Why == failCredit && agent == "codex") {
 			continue
 		}
-		if vendorTill != (r.By == "resets" || r.By == "retry-after") {
+		if timed := r.By == "resets" || r.By == "retry-after"; vendorTill != timed {
+			if timed && r.Why != failRate {
+				askOnRenewalLocked(k, r, now)
+			}
 			continue
 		}
 		delete(restingUntil.m, k)
@@ -924,9 +987,70 @@ func liftRests(agent, user string, vendorTill bool) {
 	}
 }
 
+// askOnRenewalLocked has a rest the vendor gave the time of, out of quota
+// or credit, asked again once, without lifting it, when a reading of its
+// windows finds the one it was out of full no more while the time the
+// vendor named still stands: a reset bought on the vendor's side (Zhipu's
+// 重置卡, RookieRicardoR on X) renews the window there, and every request
+// was answered with the refusal till the time it named, the vendor never
+// asked. The rest stands (#2718: the vendor's usage can say less than full
+// while its refusal does too), so a pick that keeps off a resting account
+// still does; only the hold is let go (asksAt), for the next request to
+// ask. Once for each time the vendor named: refused again with the same
+// time, the new rest holds till it, whatever readings say, as before.
+func askOnRenewalLocked(k string, r Rest, now time.Time) {
+	until, ok := restingUntil.m[k]
+	if !ok || !now.Before(until) || restingUntil.renewAsked[k].Equal(until) {
+		return
+	}
+	if restingUntil.renewAsked == nil {
+		restingUntil.renewAsked = map[string]time.Time{}
+	}
+	for x, t := range restingUntil.renewAsked {
+		if !now.Before(t) {
+			delete(restingUntil.renewAsked, x)
+		}
+	}
+	restingUntil.renewAsked[k] = until
+	r.first, r.askAt = false, now
+	restingUntil.note[k] = r
+}
+
+// creditsKnown lifts the rests out of its allowance of a ChatGPT account
+// found to go on past it on credits (provider.OnCredits), whatever time
+// the refusal named: a turn turned away before magpie knew of the credits
+// — bought once the plan ran out, or its reading failed or not come yet —
+// rested the account until its window renewed, days on, while Codex by
+// itself goes on on them (@123xtv03k on X). A rate limit's rest, or one
+// out of the credits themselves, stands; so does Codex's own hold of a
+// relayed turn for them.
+func creditsKnown(agent, user string) {
+	if agent != "codex" {
+		return
+	}
+	restingUntil.Lock()
+	now := time.Now()
+	for k, r := range restingUntil.note {
+		if r.agent != agent || !strings.EqualFold(r.user, user) || !(r.Why == failQuota || r.By == "window") {
+			continue
+		}
+		delete(restingUntil.m, k)
+		delete(restingUntil.note, k)
+		liftedLocked(k, now)
+	}
+	restingUntil.Unlock()
+	saveDropped()
+	codexHolds.Lock()
+	if h, ok := codexHolds.m[strings.ToLower(user)]; ok && h.why == failQuota {
+		delete(codexHolds.m, strings.ToLower(user))
+	}
+	codexHolds.Unlock()
+}
+
 func init() {
 	provider.OnRenewed(renewed)
 	provider.OnStarted(restarted)
+	provider.OnCredits(creditsKnown)
 }
 
 // staleAllowance is provider.StaleAllowance, swapped in tests.
@@ -979,6 +1103,8 @@ func narrowWhenRead(c candidate, r Rest) {
 var (
 	keyAllowance      = provider.KeyAllowance
 	staleKeyAllowance = provider.StaleKeyAllowance
+	// remoteSeat is provider.RemoteSeat, swapped in tests
+	remoteSeat = provider.RemoteSeat
 )
 
 // RestOf is why what rests by key — a provider's id, or its id#key — is
@@ -1024,6 +1150,7 @@ func (s *Server) Unrest(key string) bool {
 	delete(restingUntil.note, key)
 	liftedLocked(key, time.Now())
 	restingUntil.Unlock()
+	saveDropped()
 	if kept {
 		saveRests()
 	}
@@ -1050,6 +1177,13 @@ func (s *Server) UnrestAll(key string) int {
 	}
 	liftedLocked(key, now)
 	restingUntil.Unlock()
+	// and the notices of its models whose rests ended already
+	for _, n := range LimitNoticesUnder(key + "/") {
+		if dropNotice(n.Key) {
+			noticesDropped.Store(true)
+		}
+	}
+	saveDropped()
 	if kept {
 		saveRests()
 	}
@@ -1227,8 +1361,12 @@ var resetsInWords = lazyre.New(`(?i)\bresets? in (?:(\d+)\s*d(?:ays?)?\b\s*)?(?:
 // will reset after 3h19m30s." Unread, the account rested the quarter of
 // an hour of a quota that says nothing, and the account first in order
 // was asked again, and refused, every 15 minutes for the hours or days
-// its quota was out (Dani Ariyanto on Discord, 10-24).
-var quotaResetAfter = lazyre.New(`(?i)\bquota will reset after ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)`)
+// its quota was out (Dani Ariyanto on Discord, 10-24). agy's own notice
+// for an account's quota used up says it the same way: "Individual quota
+// reached. Please upgrade your subscription to increase your limits.
+// Resets in 1h18m40s." (@Airan_FS on X, through the agy-cli plugin), which
+// resetsInWords can't read, as no word ends after its "h".
+var quotaResetAfter = lazyre.New(`(?i)\b(?:quota will reset after|individual quota reached\b[^\n]{0,160}?\bresets in) ((?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?)`)
 
 // resetsAfter is how long the refusal says until it is back
 // (resetsInWords, quotaResetAfter, soonWords), held to longestWritten. Zero when it
@@ -1409,6 +1547,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	now := time.Now()
 	d := fallbackCooldown
 	why := failureOf(c, status, body)
+	if why == failOther && azureSuspended(c, status) {
+		// an Azure key that answered before, refused 401: its
+		// subscription disabled for its credit spent, back when Azure
+		// enables it again (azure_suspended.go)
+		why = failSuspended
+	}
 	if why == failCut {
 		// a plugin ended the turn on purpose, its upstream's stream having
 		// died mid-call (plugins#38): the account is as good as it was, the
@@ -1442,6 +1586,16 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// connection (regionFresh)
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
+	if status == http.StatusForbidden && provider.HarnessOnly(wordsOf(body)) {
+		// OpenRouter serving a free model only to the agent apps it lists
+		// (provider.HarnessOnly): the app the request came from was
+		// turned away, not the key, whose other models answer as before,
+		// nor the model, which another agent's request may be served. Read
+		// as the key's 403 it set every OpenRouter model aside
+		// (Wade111999 on X); none is set aside and the failure counts
+		// nowhere
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	if status == http.StatusBadRequest && signatureRefused.Match(wordsOf(body)) {
 		// Google turned a thought signature away as one it didn't give
 		// (signatureRefused): the history's doing, not the account's. A
@@ -1449,7 +1603,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// account alike (mimi001234); none is set aside
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
-	if status == http.StatusBadGateway && bytes.Contains(body, []byte(openCodeBare)) {
+	if status == http.StatusBadGateway && bodyHas(body, openCodeBare) {
 		// OpenCode's bare 400 (openCodeBareRefusal, #3740) is about the
 		// request, not the key: the key's other requests go through, so
 		// none is set aside and the failure counts nowhere
@@ -1635,6 +1789,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// Its words, for restrictedHeld to give again while it rests
 		d, r.By = restrictedRest, "restricted"
 		r.said = provider.APIError(body, http.StatusText(status))
+	case failSuspended:
+		// until it answers again: asked in the background (probeable)
+		d, r.By = suspendedRest, "suspended"
 	case failVerify:
 		d, r.By = verifyRest, "verify"
 		// the error as the agent was given it, and the link in it
@@ -1738,10 +1895,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			// greys its Send till it knows magpie is its provider
 			codexMayBeUsedUp(a.User)
 		}
-	} else if a == nil && why != failOther && why != failVerify && why != failRestricted {
+	} else if a == nil && why != failOther && why != failVerify && why != failRestricted && why != failSuspended {
 		staleKeyAllowance(c.p) // a key that reads its windows, too
 	}
-	r.Until = now.Add(d)
+	r.Until = onWall(now.Add(d))
 	if a := c.p.Account; a != nil {
 		r.agent, r.user = a.UsageAgent(), a.User
 	} else if why == failQuota {
@@ -1776,8 +1933,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if zcodeTrialRestricted(c, why) {
 		id = c.restID()
 	}
-	// a relay's 429 that names the model whose credentials cooled down, or a
-	// vendor's that names the model it limits (modelNamed), is
+	// a relay's 429 that names the model whose credentials cooled down, a
+	// vendor's that names the model it limits (modelNamed), or
+	// Antigravity's for the model's pool (antigravityPoolSpent), is
 	// that model's: its siblings on the same key still answer upstream,
 	// and the model's own sentence rests with the model, not on every
 	// sibling's refusal (#3039)
@@ -1844,6 +2002,8 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if r.Probed {
 		s.probeLater(c.p, r, now)
 	}
+	// shown on its row till the limit is over, past its rest
+	noteLimit(r, header, body, now)
 	if unread && id == c.restKey() && id != c.restID() {
 		narrowing.Add(1)
 		go narrowWhenRead(c, r)
@@ -1879,10 +2039,34 @@ func modelCooledDown(why string, body []byte) bool {
 
 // modelLimited says a refusal for want of quota, credit or rate is the
 // model's own, not the key's or account's: a relay's pooled credentials of
-// the model cooled down (modelCooledDown), or the vendor's words name the
-// model it limited (modelNamed).
+// the model cooled down (modelCooledDown), the vendor's words name the
+// model it limited (modelNamed), or Antigravity's quota of the model's
+// pool is used up (antigravityPoolSpent).
 func modelLimited(c candidate, why string, body []byte) bool {
-	return modelCooledDown(why, body) || modelNamed(c, why, body)
+	return modelCooledDown(why, body) || modelNamed(c, why, body) || antigravityPoolSpent(c, why, body)
+}
+
+// antigravityPoolQuota is Antigravity's refusal of a model whose quota pool
+// is used up, in agy's words ("Individual quota reached. Please upgrade
+// your subscription to increase your limits. Resets in 1h18m40s.", which
+// the agy-cli plugin relays) or Code Assist's ("You have exhausted your
+// capacity on this model. Your quota will reset after 3h19m30s.").
+var antigravityPoolQuota = lazyre.New(`(?i)\bindividual quota reached\b|\bexhausted your capacity on this model\b`)
+
+// antigravityPoolSpent says a quota refusal is Antigravity's for the
+// model's pool, not the account's: Google counts an Antigravity account's
+// quota per pool of models (Claude and GPT in one, Gemini's apart), and
+// has no allowance of the whole account to run out. It rests the model,
+// so the account's other pools are still asked. BruceLu73129013 on X
+// (agy-cli 0.1.87): Opus used up rested the account, and Gemini 4 Carbon,
+// its quota left, was answered the same 429 from the rest (timedHeld).
+// The retired built-in's readings told the pools apart (Pooled); agy-cli's
+// windows are display only (aside), so routing has no reading to narrow
+// the rest by, and the refusal's own words are what tell it. Only a
+// Google sign-in's (googleSignIn): another vendor's "individual quota
+// reached" says nothing of pools, and rests what it always did.
+func antigravityPoolSpent(c candidate, why string, body []byte) bool {
+	return c.model != "" && (why == failQuota || why == failRate) && googleSignIn(c.p) && antigravityPoolQuota.Match(wordsOf(body))
 }
 
 // modelLimitedBy is modelLimited, and a Claude account's plain rate limit
@@ -1973,7 +2157,7 @@ func namesModel(words []byte, name string) bool {
 		return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '_' || b == '.'
 	}
 	for from := 0; ; {
-		i := bytes.Index(words[from:], n)
+		i := bodyIndexBytes(words[from:], n)
 		if i < 0 {
 			return false
 		}
@@ -2056,7 +2240,7 @@ func restSlow(c candidate, now time.Time) (Rest, bool) {
 	if run.n > slowRests {
 		by = "backoff"
 	}
-	r := Rest{Why: failSlow, Status: http.StatusGatewayTimeout, Until: now.Add(d), By: by, Failures: run.n, Key: id, Model: c.model}
+	r := Rest{Why: failSlow, Status: http.StatusGatewayTimeout, Until: onWall(now.Add(d)), By: by, Failures: run.n, Key: id, Model: c.model}
 	if a := c.p.Account; a != nil {
 		r.agent, r.user = a.UsageAgent(), a.User
 	}
@@ -2177,9 +2361,16 @@ func creditsAgain(c candidate, status int, body []byte) bool {
 	return status == http.StatusTooManyRequests && failure(status, body) == failQuota && c.onCredits()
 }
 
-// spendsCredits is onCredits for the account of p, whose allowance is a.
+// spendsCredits is onCredits for the account of p, whose allowance is a:
+// a Codex account the user lets spend them, or a plugin's account whose
+// plugin says it goes on past a window on credits it holds
+// (plugin.UsageWindow.Credits).
 func spendsCredits(p provider.Provider, a provider.Allowance) bool {
-	return p.Account != nil && p.Account.UsageAgent() == "codex" && a.OnCredits() && provider.CodexCredits(p.Account.User)
+	if p.Account == nil || !a.OnCredits() {
+		return false
+	}
+	ag := p.Account.UsageAgent()
+	return ag == "codex" && provider.CodexCredits(p.Account.User) || strings.HasPrefix(ag, "plugin:")
 }
 
 // creditsLast: c is a Codex account on its credits (onCredits) that the
@@ -2193,11 +2384,53 @@ func spendsCredits(p provider.Provider, a provider.Allowance) bool {
 // the subscription's credits.
 func (c candidate) creditsLast(now time.Time) bool {
 	acct := c.p.Account
-	if acct == nil || !provider.CodexCreditsLast(acct.User) || freeOnChatGPT(c.model, acct.Plan) {
+	if acct == nil || acct.UsageAgent() != "codex" || !provider.CodexCreditsLast(acct.User) || freeOnChatGPT(c.model, acct.Plan) {
 		return false
 	}
+	return c.pastWindows(now)
+}
+
+// pastWindows: by its last reading a window of c's for the model is used
+// up, where an account not let spend credits is held, and c goes on past
+// it on its credits (spendsCredits).
+func (c candidate) pastWindows(now time.Time) bool {
 	a, _ := c.allowance()
 	return spendsCredits(c.p, a) && a.CapHeld(c.model, provider.WindowCaps{Credits: true}, now) != nil
+}
+
+// creditsBehind: c is a plugin's account gone on past its windows on
+// credits it holds (pastWindows), which its vendor spends after them and
+// which last longer: a Kiro trial's run a year, the plan's credits end at
+// the month's reset. Its provider's accounts not so are asked before it
+// (weigh), so no plan's credits are lost unspent while a trial's are spent.
+func (c candidate) creditsBehind(now time.Time) bool {
+	return c.p.Account != nil && strings.HasPrefix(c.p.Account.UsageAgent(), "plugin:") && c.pastWindows(now)
+}
+
+// behindOthers is cs with those on credits that go behind (creditsBehind)
+// after the others with room, and before those used up with nothing to go
+// on with (full), each in its order, and their rest keys.
+func behindOthers(cs []candidate, now time.Time) ([]candidate, map[string]bool) {
+	var ahead, behind, spent []candidate
+	var keys map[string]bool
+	for _, c := range cs {
+		switch {
+		case c.creditsBehind(now):
+			behind = append(behind, c)
+			if keys == nil {
+				keys = map[string]bool{}
+			}
+			keys[c.rest] = true
+		case !c.full(now).IsZero():
+			spent = append(spent, c)
+		default:
+			ahead = append(ahead, c)
+		}
+	}
+	if len(behind) == 0 {
+		return cs, nil
+	}
+	return append(append(ahead, behind...), spent...), keys
 }
 
 // allowance is the candidate's allowance as last known: a subscription
@@ -2327,6 +2560,12 @@ func resetsNoted(h http.Header, now time.Time) time.Duration {
 // retryAfter is when a vendor says to try again: Retry-After, in seconds
 // or as a date, or the reset headers of OpenAI's and Anthropic's kind.
 func retryAfter(h http.Header, now time.Time) time.Duration {
+	return min(retryAfterSaid(h, now), longestWait)
+}
+
+// retryAfterSaid is retryAfter as the vendor said it, not held to the
+// longest wait: the time a limit's notice is shown till (limitEnd).
+func retryAfterSaid(h http.Header, now time.Time) time.Duration {
 	var d time.Duration
 	if v := h.Get("Retry-After"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil {
@@ -2352,7 +2591,7 @@ func retryAfter(h http.Header, now time.Time) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	return min(d, longestWait)
+	return d
 }
 
 var allowances = provider.Allowances
@@ -2396,6 +2635,13 @@ type weighing struct {
 	// restID (a group's heads can be two models on one key): filled only
 	// when the routing weighs by it (routes.Strategy.ByPrice)
 	price map[string]seatPrice
+
+	// behind is the accounts on credits weigh put after the others
+	// (creditsBehind), by rest key
+	behind map[string]bool
+	// window is each seat's model's context window, by restID: filled
+	// only when the routing weighs by it (routes.Strategy.ByWindow)
+	window map[string]int
 }
 
 // seatPrice is a seat's price at the request's time, as Cheapest weighed
@@ -2419,6 +2665,10 @@ func (c candidate) allowanceKey() allowanceKey {
 
 type left struct {
 	used float64
+	// freePlan: a Remote magpie's member whose card is of an account
+	// signed in to a free plan there (provider.RemoteSeat); this
+	// magpie's own accounts are told by Account.Plan
+	freePlan bool
 	// weekLow: used is at lowShare or more for its budget windows alone,
 	// no rate cap of it near full (Allowance.CapUsed, routes.Seat.WeekLow)
 	weekLow bool
@@ -2426,7 +2676,9 @@ type left struct {
 	// fullest: when the window used is the share of renews
 	// (Allowance.Fullest), zero when not known
 	fullest time.Time
-	soon    []time.Time // renews as Smart ranks them (Allowance.Renewal)
+	// fullestName: that window's name, when more than one counts the model
+	fullestName string
+	soon        []time.Time // renews as Smart ranks them (Allowance.Renewal)
 	// unreached: how many of soon's windows Smart passes over, as they
 	// can't be used up before they renew any more (Allowance.Unreached)
 	unreached int
@@ -2479,10 +2731,16 @@ func learns(c candidate, lefts map[allowanceKey]left) bool {
 }
 
 // weigh orders one provider's candidates as its routing says, and tells
-// what it went by: with Sink on, those rate limited with quota left behind
-// the others (sink.go).
+// what it went by: a plugin's accounts gone on past their windows on
+// credits behind the others (creditsBehind), unless the user picks the
+// account; with Sink on, those rate limited with quota left behind the
+// others (sink.go). A group's heads keep the group's order: a member's
+// trial is spent before the next member.
 func weigh(p provider.Provider, cs []candidate, model string, from provider.Protocol) ([]candidate, weighing) {
 	cs, wg := weighRouted(p, cs, model, from)
+	if p.Routing != provider.Manual && !strings.HasPrefix(p.ID, provider.GroupPrefix) {
+		cs, wg.behind = behindOthers(cs, time.Now())
+	}
 	if sinks(p.Sink, p.Routing) {
 		cs = sinkLast(cs)
 	}
@@ -2531,9 +2789,16 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 	wg.lefts = map[allowanceKey]left{}
 	for _, c := range cs {
 		var a provider.Allowance
-		var ok bool
+		var ok, free bool
 		whose := c.p.ID // whose wallet a balance is in
-		if c.p.Account == nil {
+		m := c.model    // the model as its allowance counts it
+		if c.p.IsRemoteMagpie() {
+			// another magpie's: by the card of its provider serving the
+			// model there, as last read from it (#6708, zzh11223311 on X);
+			// read again in the background only when there is another to
+			// weigh it against
+			a, m, free, ok = remoteSeat(c.p, c.model, len(cs) > 1)
+		} else if c.p.Account == nil {
 			// a key that reads its own windows is weighed by them as an
 			// account is; any other key isn't known
 			a, ok = keyAllowance(c.p)
@@ -2546,20 +2811,21 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			a, ok = known[ag][c.p.Account.User]
 		}
 		if ok {
-			u, r := a.For(c.model, now)
-			pc, due := a.Pace(c.model, now)
-			amt, of, unit := a.Count(c.model, now)
+			u, r := a.For(m, now)
+			pc, due := a.Pace(m, now)
+			amt, of, unit := a.Count(m, now)
 			rs := a.Restarts(now)
-			l := left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), unreached: a.Unreached(c.model, now), lapse: a.Lapse(c.model, now), lapsing: a.Lapsing(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
+			l := left{used: u, renews: r, fullest: a.Fullest(m, now), fullestName: a.FullestName(m, now), soon: a.Renewal(m, now), unreached: a.Unreached(m, now), lapse: a.Lapse(m, now), lapsing: a.Lapsing(m, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
 				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs), credits: spendsCredits(c.p, a)} // one not known counts as unused
 			l.dueExpiry = !l.dueRestart && !l.lapse.IsZero() && due.Equal(l.lapse)
-			l.weekLow = u >= lowShare && u < usedShare && a.CapUsed(c.model, now) < lowShare
-			l.first = l.credits && provider.CodexCreditsFirst(c.p.Account.User)
-			if b, bu, has := a.Left(c.model); has {
+			l.weekLow = u >= lowShare && u < usedShare && a.CapUsed(m, now) < lowShare
+			l.first = l.credits && c.p.Account.UsageAgent() == "codex" && provider.CodexCreditsFirst(c.p.Account.User)
+			if b, bu, has := a.Left(m); has {
 				// a wallet's figure is weighed only against the same
 				// provider's in the same unit (routes.Seat.LeftIn)
 				l.bal, l.balUnit, l.balIn = b, bu, whose+"\x00"+bu
 			}
+			l.freePlan = free
 			wg.lefts[c.allowanceKey()] = l
 		}
 	}
@@ -2609,7 +2875,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		}
 		wg.expires = map[string]time.Time{}
 		for i, c := range cs {
-			seats[i].FreePlan = c.p.Account != nil && provider.FreePlan(c.p.Account.Plan)
+			seats[i].FreePlan = c.p.Account != nil && provider.FreePlan(c.p.Account.Plan) || wg.lefts[c.allowanceKey()].freePlan
 			if seats[i].FreePlan {
 				wg.free[c.rest] = true
 			}
@@ -2643,6 +2909,15 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pr = pr.In(at)
 			seats[i].Priced, seats[i].Cost, seats[i].CacheCost = true, pr.Input+pr.Output, pr.CacheRead
 			wg.price[c.restID()] = seatPrice{in: pr.Input, out: pr.Output, cache: pr.CacheRead, peak: peak}
+		}
+	}
+	if st.ByWindow {
+		// as roomy reads it: the provider's own, else the catalog's
+		served := sync.OnceValue(provider.Served)
+		wg.window = map[string]int{}
+		for i, c := range cs {
+			seats[i].Window = windowIn(served, c.p, c.model)
+			wg.window[c.restID()] = seats[i].Window
 		}
 	}
 	order := routes.Apply(st, p.ID, seats)

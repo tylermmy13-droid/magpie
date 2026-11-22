@@ -58,6 +58,13 @@ const (
 	// (routes.FreeExpiring; wowbbs on Discord: five check-in accounts of
 	// WorkBuddy, MiniMax, Trae and Qoder in one group). A group's only.
 	FreeExpiring = "expiring"
+	// SmallFirst sends a request to the member with the smallest context
+	// window that holds it, so the big ones are kept for long requests
+	// (routes.SmallFirst; yg6888 on X: Composer's 200K and Grok 4.7's
+	// 256K never answered in a group of 1M models under Smart). Members
+	// too small are left out as under every routing (roomy). A group's
+	// only: a provider's keys and accounts serve one window.
+	SmallFirst = "fit"
 )
 
 // FreePlan says whether an account's plan, as its vendor or plugin names
@@ -81,6 +88,16 @@ var pluginRouting = lazyre.New(`^[A-Za-z0-9._-]+/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // keeps one as saved, served now or not: one no plugin serves is tried in
 // its listed order.
 func PluginRouting(routing string) bool { return pluginRouting.MatchString(routing) }
+
+// GroupRouting says whether routing is one a routing group can be routed
+// by besides Smart (""): a built-in one, Manual, or a plugin's.
+func GroupRouting(routing string) bool {
+	switch routing {
+	case Ordered, Rotate, LeastUsed, Pace, Weighted, FreeFirst, Fastest, Cheapest, Drain, FreeExpiring, SmallFirst, Manual:
+		return true
+	}
+	return PluginRouting(routing)
+}
 
 // SetRouting changes how a provider's requests spread over its keys or
 // accounts.
@@ -220,6 +237,12 @@ func SetRestartApp(id string, on bool) error {
 	p.RestartApp = on
 	return Save(*p)
 }
+
+// CodexRestartsApp is codexRestartsApp, for the agent package: a change
+// of Codex's route magpie makes by itself restarts the Codex app's
+// app-server (moving the chats it has open first, CodexBeforeAppEnd) only
+// when it says so.
+func CodexRestartsApp() bool { return codexRestartsApp() }
 
 // codexRestartsApp is whether the user had magpie restart the Codex app's
 // app-server for a change it makes by itself (Provider.RestartApp). While
@@ -370,6 +393,10 @@ type Limit struct {
 	// account at (WindowCaps.own); it rides in pool, never in the
 	// allowance itself
 	aside bool
+	// extra is set beside aside on a Claude account's extra usage
+	// (QuotaWindow.Extra): its cap holds the account as
+	// ClaudeNoExtraUsage would (Allowance.extraCapped), not outright
+	extra bool
 	// ResetRunsOut is when the reset the account spends by itself before
 	// it runs out does (resetRunsOut): spent then, it starts this window
 	// again — at Restarts, which routing takes for the window's renewal
@@ -521,20 +548,39 @@ func (a Allowance) CapUsed(model string, now time.Time) float64 {
 // Zero when that window's reset isn't known, or has passed (it is empty
 // again then, its next reset not known).
 func (a Allowance) Fullest(model string, now time.Time) time.Time {
+	at, _ := a.fullest(model, now)
+	return at
+}
+
+// FullestName is the name of the window For's share is of (Fullest's),
+// when more than one window counts model: the share alone ("41% used")
+// read as the five hours on the Routing page while it was the week's,
+// the five hours at 0% (Wing8Aqua on X). Empty when one window, or none,
+// counts it, or the vendor didn't name it.
+func (a Allowance) FullestName(model string, now time.Time) string {
+	_, name := a.fullest(model, now)
+	return name
+}
+
+func (a Allowance) fullest(model string, now time.Time) (time.Time, string) {
 	model = strings.ToLower(model)
-	used, at := -1.0, time.Time{}
+	used, at, name, n := -1.0, time.Time{}, "", 0
 	for _, l := range a {
 		if !l.applies(model) {
 			continue
 		}
+		n++
 		if !l.Resets.IsZero() && !l.Resets.After(now) {
 			l.Used, l.Resets = 0, time.Time{}
 		}
 		if l.Used > used || l.Used == used && l.Resets.After(at) {
-			used, at = l.Used, l.Resets
+			used, at, name = l.Used, l.Resets, l.Name
 		}
 	}
-	return at
+	if n < 2 {
+		name = ""
+	}
+	return at, name
 }
 
 // Count is the count of the window For's share is of — the fullest that
@@ -883,8 +929,18 @@ func (l Limit) expiring(u float64, now, ends time.Time) (pace float64, at time.T
 // Allowances is each of an agent's accounts' allowance by user, as last
 // known, asked for again in the background when that was over a minute
 // ago. Only the very first ask waits, and not for long. An account
-// missing is one not known yet.
+// missing is one not known yet. A ChatGPT API account is known by the
+// same ChatGPT account's Codex reading (samePlanAllowances).
 func Allowances(agent string) map[string]Allowance {
+	m := readAllowances(agent)
+	if agent == ChatGPTAPIID {
+		m = samePlanAllowances(m)
+	}
+	return m
+}
+
+// readAllowances is Allowances as agent's own readings tell it.
+func readAllowances(agent string) map[string]Allowance {
 	c := &usedCache
 	c.Lock()
 	if c.m == nil {
@@ -929,7 +985,7 @@ func Allowances(agent string) map[string]Allowance {
 				}
 				c.read[key] = st
 			}
-			var renewed, restarts []string
+			var renewed, restarts, credits []string
 			for user, a := range all {
 				key := agent + "/" + strings.ToLower(user)
 				if c.renewed[key] > began {
@@ -945,6 +1001,11 @@ func Allowances(agent string) map[string]Allowance {
 					}
 					if a.startedAgain(was.a, was.at, share, now) {
 						restarts = append(restarts, user)
+					}
+					if a.OnCredits() && !was.a.OnCredits() {
+						// credits it was not read to hold: bought once
+						// its allowance ran out (NoteCodexCredits)
+						credits = append(credits, user)
 					}
 				}
 				c.seen[key] = reading{a, now}
@@ -979,6 +1040,11 @@ func Allowances(agent string) map[string]Allowance {
 			}
 			for _, user := range restarts {
 				tellStarted(agent, user)
+			}
+			for _, user := range credits {
+				if agent != "codex" || CodexCredits(user) {
+					tellCredits(agent, user)
+				}
 			}
 			close(done)
 		})
@@ -1023,7 +1089,7 @@ func ReadUsageNow(ctx context.Context, agent string, users ...string) bool {
 	}
 	c := &usedCache
 	for range 3 {
-		Allowances(agent)
+		readAllowances(agent)
 		c.Lock()
 		done, back := c.loading[agent], !c.at[agent].IsZero()
 		c.Unlock()
@@ -1131,7 +1197,7 @@ func AwaitAllowance(ctx context.Context, agent, user string) bool {
 		return false
 	}
 	for range 3 {
-		Allowances(agent)
+		readAllowances(agent)
 		c.Lock()
 		done := c.loading[agent]
 		c.Unlock()
@@ -1312,7 +1378,9 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 		if !w.Aside || w.Text || w.Model != "" || w.PoolWindow() {
 			continue
 		}
-		al := Limit{Used: w.Used, Span: w.Span, Name: w.Name, Resets: resets(w), aside: true}
+		// with its count, so a cap of an amount of its unit holds too
+		al := Limit{Used: w.Used, Span: w.Span, Name: w.Name, Resets: resets(w), aside: true,
+			Amount: w.Amount, Of: w.Limit, Unit: w.Unit, extra: w.Extra}
 		for i := range a {
 			a[i].pool = append(a[i].pool, al)
 		}
