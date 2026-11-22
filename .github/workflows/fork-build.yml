@@ -3,10 +3,9 @@ name: Fork build (macOS app)
 # This fork's own build of the Mac app, since upstream's Release workflow
 # hands off to yetone/magpie-releases with secrets a fork doesn't have.
 # Run by hand (Actions > Fork build > Run workflow) or by a push to main
-# that touches the app's code: it builds magpie.app natively on a macOS
-# runner for Apple silicon and for Intel and signs each ad hoc (no Developer
-# ID: the first open needs Gatekeeper's leave). It uploads both zips, and
-# publishes them as a release of this fork for builds from main. The version is git's own
+# that touches the app's code: it builds and ad hoc signs magpie.app for
+# Apple silicon. Builds from main also publish the zip as a fork release.
+# The version is git's own
 # (a bare commit hash), which is no release version, so the app never
 # updates itself to upstream's build (update.Released).
 
@@ -42,24 +41,21 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build magpie.app for each chip
+      - name: Build magpie.app for Apple silicon
         run: |
           set -euo pipefail
           mkdir -p out
-          for arch in arm64 amd64; do
-            make clean
-            GOARCH=$arch CGO_ENABLED=1 make app
-            codesign --force --deep --sign - magpie.app
-            codesign --verify --deep magpie.app
-            [ "$arch" = arm64 ] && name=apple-silicon || name=intel
-            ditto -c -k --keepParent magpie.app "out/magpie-mac-$name.zip"
-          done
-          ls -l out
+          GOARCH=arm64 CGO_ENABLED=1 make app
+          test "$(lipo -archs magpie.app/Contents/MacOS/magpie)" = arm64
+          codesign --force --deep --sign - magpie.app
+          codesign --verify --deep magpie.app
+          ditto --norsrc --noextattr --noqtn -c -k --keepParent magpie.app out/magpie-mac-apple-silicon.zip
 
       - uses: actions/upload-artifact@v4
         with:
           name: magpie-mac
-          path: out/*.zip
+          path: out/magpie-mac-apple-silicon.zip
+          if-no-files-found: error
 
       - name: Publish as this fork's release
         if: github.ref == 'refs/heads/main'
@@ -69,6 +65,6 @@ jobs:
           set -euo pipefail
           tag="fork-$(git rev-parse --short HEAD)"
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$tag" out/*.zip --target "$GITHUB_SHA" \
+          gh release create "$tag" out/magpie-mac-apple-silicon.zip --target "$GITHUB_SHA" \
             --title "Fork build $tag" \
             --notes "This fork's own build of the Mac app at $GITHUB_SHA. Not signed with a Developer ID. It keeps its files in ~/.config/magpie, as an installed magpie does."
