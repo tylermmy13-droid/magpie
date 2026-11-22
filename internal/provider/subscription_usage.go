@@ -101,6 +101,11 @@ type QuotaWindow struct {
 	// (Allowance.OnCredits); kept
 	// with the reading, so one shown from before still says it.
 	Credits bool `json:"credits,omitempty"`
+	// Extra is set on a Claude account's "Usage credits" window
+	// (claudeExtraWindow): the extra usage Anthropic bills past the plan,
+	// set aside. A cap the user sets on it holds the account at 100% of a
+	// plan window once reached (Allowance.extraCapped), never outright.
+	Extra bool `json:"extra,omitempty"`
 	// Capped is set, for the GUI only (WithCapped), on a window an
 	// account's usage cap counts: neither Aside nor unlimited. One model's
 	// own counts for that model (CapHeld), so it is marked like the rest.
@@ -213,6 +218,10 @@ type SubscriptionQuota struct {
 	// ReadDeferred distinguishes a reading deliberately not requested from
 	// a request that failed. AsOf and ReadAt still date the cached values.
 	ReadDeferred bool `json:"readDeferred,omitempty"`
+	// ReadError is why the reading AsOf stands in for failed, so a
+	// stand-in that has lasted days says why (tmr11235 on X: agy-cli's
+	// quota "as of" four days back, with no reason given).
+	ReadError string `json:"readError,omitempty"`
 	// ReadAt is when what is shown was read: a key's balance, kept a
 	// minute (KeyBalances), or an account's allowance, which a cache (a
 	// minute's, or a Claude account's until Claude Code tells it again)
@@ -278,6 +287,14 @@ type SubscriptionQuota struct {
 	// this computer (#1547, remote_key_limits.go): the limit that magpie
 	// holds the key to, beside the windows that show it.
 	GatewayKey *GatewayKeyLimit `json:"gatewayKey,omitempty"`
+	// Routing is, on a card told another magpie (RemoteCardsPath), what
+	// each window's json leaves out for routing (Span, Model, Aside), in
+	// the windows' order: that magpie weighs its Remote magpie by the card
+	// (RemoteAllowance, #6708). Set only as cards are told; nil elsewhere.
+	Routing []lastWindow `json:"routing,omitempty"`
+	// routable: a remote magpie's card whose windows have Routing laid
+	// back on them (keepRemoteCards), so routing may go by them
+	routable bool
 	// In-process read order, separate from the vendor's ReadAt and never
 	// persisted: restarting starts a new sequence.
 	readSeq uint64
@@ -385,7 +402,7 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 	c.Lock()
 	out := visibleQuotas(c.data)
 	c.Unlock()
-	return withDailyCredits(out, time.Now())
+	return withDailyCredits(withHeardClaudeCards(out), time.Now())
 }
 
 // SubscriptionUsageReading says a read of the accounts' usage is under way:
@@ -413,7 +430,7 @@ func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 		}
 		if q.Provider == "gemini" || q.Provider == "antigravity" {
 			if chosen == nil {
-				chosen = exposedIDs("gemini", "antigravity")
+				chosen = keptExposedIDs("gemini", "antigravity")
 			}
 			var base func(string) string
 			if q.Provider == "antigravity" {
@@ -431,6 +448,47 @@ func visibleQuotas(all []SubscriptionQuota) []SubscriptionQuota {
 		out = append(out, q)
 	}
 	return out
+}
+
+// keptExposed is exposedIDs for Gemini's and Antigravity's quotas, kept
+// while StampNow stays the same, and no longer than exposedFor. The tray
+// reads usage every few minutes, and building it each time loaded the
+// whole catalog (5.6 MB of a tray-only magpie's 12.8 MB live heap) before
+// catalog's loadIdle could let it go.
+var keptExposed struct {
+	sync.Mutex
+	ids   map[string]map[string]bool
+	key   string
+	stamp Stamp
+	at    time.Time
+}
+
+// exposedFor bounds how long keptExposed is trusted across what a Stamp
+// can't see: a model retired by its date, another app's account file.
+const exposedFor = 30 * time.Minute
+
+// exposedBuilds counts keptExposedIDs' builds, for a test.
+var exposedBuilds atomic.Int64
+
+// keptExposedIDs is exposedIDs(ids...), built again only after a change
+// or for other ids. What it gives is shared: read only.
+func keptExposedIDs(ids ...string) map[string]map[string]bool {
+	key := strings.Join(ids, "\x00")
+	now := StampNow()
+	keptExposed.Lock()
+	defer keptExposed.Unlock()
+	if keptExposed.ids != nil && keptExposed.key == key && keptExposed.stamp == now && time.Since(keptExposed.at) < exposedFor {
+		return keptExposed.ids
+	}
+	exposedBuilds.Add(1)
+	built := exposedIDs(ids...)
+	// a change while it was built: the next read builds it again
+	if StampNow() == now {
+		keptExposed.ids, keptExposed.key, keptExposed.stamp, keptExposed.at = built, key, now, time.Now()
+	} else {
+		keptExposed.ids = nil
+	}
+	return built
 }
 
 // exposedIDs is, for each provider of ids, the models magpie offers from
@@ -582,7 +640,13 @@ func fetchSubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 			} else if ok {
 				forgetLoginReading(l.Login)
 			}
-			fetches = append(fetches, func() SubscriptionQuota { return loginReading(viaLogin(agent, l.User), l.Login).read })
+			fetches = append(fetches, func() SubscriptionQuota {
+				q := loginReading(viaLogin(agent, l.User), l.Login).read
+				if q.User == "" {
+					q.User = l.User // as perLogin names it
+				}
+				return q
+			})
 		}
 	}
 	fetches = append(fetches, pluginUsageFetches(via, hidden, placed)...)
@@ -670,12 +734,16 @@ func (e *accountStatusError) Error() string { return http.StatusText(e.status) }
 // a Team seat isn't the email alone `claude auth status` gives.
 func claudeSubscriptionUsage(ctx context.Context, user string) SubscriptionQuota {
 	q := SubscriptionQuota{Provider: "claude", Name: "Claude Code", Icon: "claude-color", Windows: []QuotaWindow{}}
-	if _, _, ok := claudeCredential(); !ok {
+	c, _, ok := claudeCredential()
+	if !ok {
 		q.Error = "Claude Code is signed out; run claude auth login"
 		return q
 	}
-	_, plan, _ := claudeIdentity()
-	q.Plan = plan
+	// named as the account is (claudeAccount): `claude auth status` says
+	// "max" for Max 20x too, which Claude sells as Ultra (shangyuan0818 on X)
+	_, statusPlan, _ := claudeIdentity()
+	acct, _ := claudeProfileAccount()
+	q.Plan = claudeLivePlan(c, statusPlan, acct)
 	var err error
 	q.Windows, err = claudeWindows(ctx, user, true)
 	if err != nil {
@@ -738,6 +806,19 @@ func (e claudeUsageEntry) windows(now time.Time) []QuotaWindow {
 		ws[i].partial = !e.whole
 	}
 	return ws
+}
+
+// claudeHeardStands says what Claude Code said as it answered still stands
+// for user's allowance in place of a /usage read that failed: for
+// claudeHeard, and for a setup-token account, which /usage can't read at
+// all, so a reply's headers are the only reading it will ever have, until
+// its windows renew (windows reads those as started again), however long
+// ago it answered (mayne_wong on X).
+func claudeHeardStands(e claudeUsageEntry, user string, now time.Time) bool {
+	if e.ws == nil || e.heard.IsZero() {
+		return false
+	}
+	return now.Sub(e.heard) < claudeHeard || claudeTokenAccount(user)
 }
 
 // claudeAskFloor is the least time between two readings, however often the
@@ -937,7 +1018,7 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 		c.m[key] = e
 	}
 	c.Unlock()
-	heard := e.ws != nil && now.Sub(e.heard) < claudeHeard
+	heard := claudeHeardStands(e, user, now)
 	if !read {
 		switch {
 		case ok && e.err != nil && !(heard && !claudeDenied(e.err.Error())):
@@ -994,13 +1075,25 @@ func claudeWindows(ctx context.Context, user string, active bool) ([]QuotaWindow
 			e = f // headers received while /usage ran are newer than e
 		}
 		c.Unlock()
-		if e.ws != nil && time.Since(e.heard) < claudeHeard && !claudeDenied(err.Error()) {
+		if claudeHeardStands(e, user, time.Now()) && !claudeDenied(err.Error()) {
 			return e.windows(time.Now()), nil // a fresh header stands unless the account was refused
 		}
 		return ws, err
 	}
-	// a whole reading: a window it leaves out hasn't started
-	ws = claudeWithUnstarted(ws)
+	// a whole reading: a window it leaves out hasn't started, unless the
+	// account is seen used with none (claudeNoFiveHour)
+	prev, prevAt := e.ws, e.at
+	if prev == nil {
+		if q, ok := lastReading("claude/" + key); ok {
+			prev, prevAt = q.Windows, e.at
+			if q.ReadAt != nil {
+				prevAt = *q.ReadAt
+			}
+		}
+	}
+	if !claudeNoFiveHour(prev, prevAt, ws, now) {
+		ws = claudeWithUnstarted(ws)
+	}
 	c.Lock()
 	if c.m == nil {
 		c.m = map[string]claudeUsageEntry{}
@@ -1160,17 +1253,7 @@ func codexWindows(ctx context.Context, token, accountID string) (plan string, ou
 // or less) is none left, whatever has_credits says.
 func codexGoesOnCredits(u codexUsage) bool {
 	c := u.Credits
-	if c == nil {
-		return false
-	}
-	if c.Unlimited {
-		return true
-	}
-	if !c.Has {
-		return false
-	}
-	n, err := strconv.ParseFloat(strings.TrimSpace(c.Balance), 64)
-	return err != nil || n > 0
+	return c != nil && CodexGoesOnCredits(c.Has, c.Unlimited, c.Balance)
 }
 
 // codexUsage is what /wham/usage tells of a ChatGPT account.

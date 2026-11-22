@@ -1195,7 +1195,8 @@ body.window .rt-gedit > .bar { --vfoot: 8px; }
   .rt-flow-src .to { padding-left: 15px; }
   .rt-flow-dst { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; }
   .rt-flow-dst .bar { display: none; }
-  .rt-flow-dst .fres { grid-column: 1 / -1; margin-left: 20px; }
+  .rt-flow-dst .fres { grid-column: 1 / -1; margin-left: 20px; white-space: normal; overflow-wrap: anywhere; }
+  .rt-flow-dst .fres::before { top: .7em; }
 }
 
 /* the request list's columns, named over it */

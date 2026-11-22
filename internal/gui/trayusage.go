@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/egress"
 	"github.com/yetone/magpie/internal/fx"
 	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
@@ -23,7 +24,8 @@ import (
 // Settings → Allowances in the menu bar: the windows of the subscriptions and
 // plans ticked there, beside the tray icon, for keeping an eye on them
 // without opening magpie. The Mac's menu bar draws each as its logo with
-// its two windows stacked, "42%" over "18%", side by side (trayimage), or
+// its two windows stacked, "42%" over "18%", side by side (trayimage), and
+// every window of a card with more in columns of two, or
 // as the windows alone, a thin line between cards, when Settings turns the
 // logos off; a tray elsewhere gets them as text ("42% · 18% | 10% · 5%"), Windows' in
 // the icon's tooltip only, having no room for any.
@@ -33,7 +35,7 @@ import (
 // more than the Usage page asks them: their answers are cached for a
 // minute, and this reads the cache.
 func trayUsageEvery() time.Duration {
-	return time.Duration(settings.Load().TrayUsageEvery) * time.Minute
+	return time.Duration(settings.Shared().TrayUsageEvery) * time.Minute
 }
 
 // trayCardID names a card for settings.TrayUsage: its provider, and the
@@ -328,8 +330,17 @@ func trayCardText(lang string, q provider.SubscriptionQuota, now time.Time, left
 		}
 		long = append(long, line)
 	}
-	if len(short) > 2 {
-		short = short[:2]
+	// a wallet beside the windows (Kimi Code's booster, "Extra usage"):
+	// what is left on it, as the card's line under its rings says it
+	for _, w := range q.Windows {
+		if w.Balance == nil {
+			continue
+		}
+		amt := strconv.FormatFloat(math.Round(*w.Balance*100)/100, 'f', -1, 64)
+		if u := pageWord(lang, w.Unit); u != "" {
+			amt += " " + u
+		}
+		long = append(long, trayWindowName(lang, w.Name)+" "+trayText(lang, "%s left", amt))
 	}
 	return strings.Join(short, " · "), q.Name + "\n" + strings.Join(long, "\n") + trayAsOf(lang, q)
 }
@@ -388,8 +399,9 @@ func until(lang string, d time.Duration) string {
 
 // trayUsageCards are the cards settings.TrayUsages names, in its order,
 // among the Usage page's (cached as there), and magpie's own totals it
-// names (trayTotal); one gone is left out. The vendors aren't asked when
-// only totals are named.
+// names (trayTotal); one gone is left out, and so is one the Usage page's
+// Overview hides, as are the rows it hides (trayShown). The vendors aren't
+// asked when only totals are named.
 func trayUsageCards(ctx context.Context, lang string, ids []string) []provider.SubscriptionQuota {
 	if len(ids) == 0 {
 		return nil
@@ -408,11 +420,40 @@ func trayUsageCards(ctx context.Context, lang string, ids []string) []provider.S
 		}
 		if currency == "" {
 			currency, rate = trayCurrency()
-			noCost = settings.Load().TrayNoCost
+			noCost = settings.Shared().TrayNoCost
 		}
 		cards = append(cards, trayTotalCard(lang, id, trayMoney(trayTotalSum(p), noCost), currency, rate))
 	}
-	return trayPick(cards, ids, time.Now())
+	return trayShown(cards, ids, time.Now(), settings.Shared())
+}
+
+// trayShown is trayPick less what the Usage page's Overview hides
+// (settings.UsageCardsHidden, UsageWindowsHidden): a card hidden there
+// showed on in the menu bar, its tooltip and Windows' tray figure, though
+// the Overview and the tray panel left it out (onkashiko on X). The cells
+// ticked are kept, so a card shown again comes back to its cell. A named
+// cell takes the account's card the Overview still shows (its balance,
+// say, with its plan hidden); a cell following the account in use picks
+// that account among them all, as before, and is left empty when its card
+// is hidden, rather than moving to another account.
+func trayShown(cards []provider.SubscriptionQuota, ids []string, now time.Time, s settings.Settings) []provider.SubscriptionQuota {
+	if len(s.UsageCardsHidden)+len(s.UsageWindowsHidden) == 0 {
+		return trayPick(cards, ids, now)
+	}
+	shown := provider.ShownQuotas(cards, s)
+	var out []provider.SubscriptionQuota
+	for _, id := range ids {
+		if !strings.HasSuffix(id, trayInUse) {
+			out = append(out, trayPick(shown, []string{id}, now)...)
+			continue
+		}
+		for _, q := range trayPick(cards, []string{id}, now) {
+			if !provider.QuotaCardHidden(q, s) {
+				out = append(out, provider.QuotaRowsShown(q, s))
+			}
+		}
+	}
+	return out
 }
 
 // trayTotal starts the id of a card of magpie's own count instead of a
@@ -522,10 +563,21 @@ func trayMoney(t usage.Totals, noCost bool) usage.Totals {
 	return t
 }
 
-// trayCurrency is the currency Settings shows costs in, and the yuan's
-// rate when that is CNY.
+// trayCurrency is the currency the menu bar and its tooltip show magpie's
+// totals' cost in (Settings' Menu bar currency, else the totals'), and the
+// yuan's rate when that is CNY.
 func trayCurrency() (currency string, rate float64) {
-	currency = settings.Load().Currency
+	return currencyRate(settings.Load().TrayCostIn())
+}
+
+// totalsCurrency is the currency Settings shows a sum of costs in (a
+// total's, of every provider), and the yuan's rate when that is CNY.
+func totalsCurrency() (currency string, rate float64) {
+	return currencyRate(settings.Load().TotalCostIn())
+}
+
+func currencyRate(currency string) (string, float64) {
+	var rate float64
 	if currency == "cny" {
 		rate = fx.Soon().CNYPerUSD // never waited for, as the Settings page's
 	}
@@ -540,6 +592,25 @@ func trayTokens(lang string, t usage.Totals) string {
 		parts = append(parts, trayText(lang, "%s cached", trayCount(lang, cached)))
 	}
 	return trayText(lang, "%s tokens (%s)", trayCount(lang, t.Tokens()+t.CacheRead+t.CacheWrite), strings.Join(parts, " · "))
+}
+
+// trayEgressTip is the line the tooltip begins with while the Claude
+// accounts' way out to the internet is in a region Anthropic doesn't list
+// (internal/egress); "" otherwise, an unknown one too.
+func trayEgressTip(lang string, r egress.Result) string {
+	if r.State != egress.Unsupported {
+		return ""
+	}
+	return "⚠ " + trayText(lang, "Claude's way out to the internet is in %s, outside Anthropic's supported regions", r.Loc)
+}
+
+// trayEgress is the Claude accounts' way out as the tray tells it: Unknown
+// with no account.
+var trayEgress = func() egress.Result {
+	if cs := provider.ClaudeProxies(); len(cs) > 0 {
+		return egress.Worst(cs)
+	}
+	return egress.Result{State: egress.Unknown}
 }
 
 // trayIdleTip is the tooltip while the menu bar shows no cards: magpie's
@@ -569,7 +640,7 @@ func trayIdleTip(lang string, t usage.Totals, currency string, rate float64) str
 }
 
 // trayChineseUnits is Settings' 万/亿 choice, read when a count is said.
-var trayChineseUnits = func() bool { return settings.Load().ChineseUnits }
+var trayChineseUnits = func() bool { return settings.Shared().ChineseUnits }
 
 // trayCount is a count as the Usage page says it (fmtN in app.js): 133M,
 // 1.2M, 456K, 8.2K, 950; with Settings' 万/亿 units and magpie in Chinese,
@@ -693,9 +764,10 @@ func trayName(q provider.SubscriptionQuota) string {
 
 // trayCell is a card as the Mac's menu bar draws it: its logo, and its
 // label's parts stacked, the shortest window over the longer ("42%" over
-// "18%"), or its balance alone.
+// "18%"), in columns of two when it has more, or its balance alone.
 type trayCell struct {
 	ID     string // stable provider/account identity, captured with the drawn cell
+	Logo   string // the card's icon name ("claude-color"), as the Usage page names it
 	Icon   []byte // the logo as the Usage page has it (SVG or PNG); nil for none
 	Mono   bool   // a black glyph, drawn in the menu bar's text colour
 	Letter string // drawn in its place when there is no logo, or it can't be read
@@ -712,6 +784,30 @@ func trayPlain(cells []trayCell) []trayCell {
 	}
 	return out
 }
+
+// trayClaudeLogos are the logos of Claude's cards: Claude Code's
+// subscription, and a plugin's that signs in to Anthropic.
+var trayClaudeLogos = []string{"claude-color", "claudecode-color"}
+
+// trayAnthropic are the cells with Anthropic's "A\" mark in place of
+// Claude's logo (settings.TrayAnthropicMark): a black glyph, drawn in the
+// menu bar's text colour as every logo there is.
+func trayAnthropic(cells []trayCell) []trayCell {
+	out := slices.Clone(cells)
+	for i, c := range out {
+		if !c.Plain && slices.Contains(trayClaudeLogos, c.Logo) {
+			out[i].Icon, out[i].Mono = trayAnthropicMark, true
+		}
+	}
+	return out
+}
+
+// trayAnthropicMark is Anthropic's mark drawn here, not taken from any
+// file of theirs: a bold "A" whose legs slant as its counter does, and a
+// backslash of the same weight and slant beside it.
+var trayAnthropicMark = []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">` +
+	`<path fill="#000" fill-rule="evenodd" d="M0.6 20 6.84 4h3.6l6.24 16h-3.4l-1.4-3.6H5.4L4 20Zm6.05-6.8h3.98L8.64 8.1Z"/>` +
+	`<path fill="#000" d="M12.84 4h3.4l6.24 16h-3.4Z"/></svg>`)
 
 // trayUsageView is trayCardsView with every window shown, in English.
 func trayUsageView(cards []provider.SubscriptionQuota, now time.Time, left, pace bool) (cells []trayCell, label, tip string) {
@@ -744,6 +840,7 @@ func trayCardsView(lang string, cards []provider.SubscriptionQuota, now time.Tim
 			cells = append(cells, c)
 			continue
 		}
+		c.Logo = q.Icon
 		c.Icon, c.Mono = trayIconFile(q.Icon)
 		if r := []rune(strings.TrimSpace(q.Name)); len(r) > 0 {
 			c.Letter = strings.ToUpper(string(r[0]))

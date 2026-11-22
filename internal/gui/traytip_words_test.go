@@ -51,7 +51,7 @@ func TestPluginWindowWordsSaidInEveryLanguage(t *testing.T) {
 		// units
 		"credits", "tokens", "requests", "questions",
 		// window names
-		"Credits", "Extra credits", "Prepaid credits", "Free model tokens", "deepseek-v4.1-flash tokens (est.)", // workbuddy
+		"Credits", "Extra credits", "Prepaid credits", "Free model tokens", "deepseek-v4.1-flash tokens (est.)", "deepseek-v4.1-flash tokens", // workbuddy
 		"Add-on credits", "Dedicated credits", "Shared credits", "Total credits", // qoder
 		"Monthly credits", "Purchased credits", "5-hour window", // agnes
 		"Promotional Credits",                         // gcp-ai
@@ -95,5 +95,52 @@ func TestParsePageWordsInOneLanguage(t *testing.T) {
 	}
 	if pageWords("ja")["Credits"] == "" || pageWords("zh")["Credits"] == pageWords("ja")["Credits"] {
 		t.Errorf("ja then zh: %q %q", pageWords("ja")["Credits"], pageWords("zh")["Credits"])
+	}
+}
+
+// The tray keeps the words it asked for, not the language's whole table:
+// a word asked again is not looked up again, and the table a lookup
+// parsed is let go a minute later.
+func TestPageWordKeepsOnlyAskedWords(t *testing.T) {
+	wordsMu.Lock()
+	wordsLang, wordsAsked, wordsTable = "", nil, nil
+	wordsMu.Unlock()
+	t.Cleanup(func() {
+		wordsMu.Lock()
+		wordsLang, wordsAsked, wordsTable = "", nil, nil
+		wordsMu.Unlock()
+	})
+	parsed := func() int {
+		wordsMu.Lock()
+		defer wordsMu.Unlock()
+		return wordsParsed
+	}
+	now := time.Now()
+	start := parsed()
+	if askWord("zh", "Credits", now) == "" || askWord("zh", "5 hours", now) == "" {
+		t.Fatal("zh has Credits and 5 hours")
+	}
+	if askWord("zh", "no such words", now) != "" {
+		t.Fatal("a word the page doesn't have")
+	}
+	if n := parsed() - start; n != 1 {
+		t.Fatalf("one card's words parsed the table %d times, want 1", n)
+	}
+	later := now.Add(wordsTableFor)
+	for range 3 {
+		askWord("zh", "Credits", later)
+		askWord("zh", "no such words", later)
+	}
+	wordsMu.Lock()
+	held := wordsTable != nil
+	wordsMu.Unlock()
+	if held {
+		t.Fatal("the table is still held a minute after the lookup")
+	}
+	if n := parsed() - start; n != 1 {
+		t.Fatalf("words asked before were looked up again: %d parses", n)
+	}
+	if askWord("ja", "Credits", later) == askWord("zh", "Credits", later) {
+		t.Fatal("ja answered with zh's word")
 	}
 }

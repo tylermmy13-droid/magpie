@@ -56,13 +56,13 @@ func TestTrayMenuLabels(t *testing.T) {
 		}
 	}
 	zh := trayMenuLabels("zh", "0.1.500", "", false)
-	if zh != (trayLabels{"打开 magpie", "暂停网关", "版本 0.1.500", "重启以更新", "退出 magpie"}) {
+	if zh != (trayLabels{"打开 magpie", "暂停网关", "版本 0.1.500", "重启 magpie", "退出 magpie"}) {
 		t.Errorf("zh: %+v", zh)
 	}
 	if tw := trayMenuLabels("zh-TW", "0.1.500", "0.1.501", false); tw != (trayLabels{"開啟 magpie", "暫停閘道", "版本 0.1.500", "重新啟動以更新到 0.1.501", "結束 magpie"}) {
 		t.Errorf("zh-TW: %+v", tw)
 	}
-	if ja := trayMenuLabels("ja", "0.1.500", "", false); ja != (trayLabels{"magpie を開く", "ゲートウェイを一時停止", "バージョン 0.1.500", "再起動してアップデート", "magpie を終了"}) {
+	if ja := trayMenuLabels("ja", "0.1.500", "", false); ja != (trayLabels{"magpie を開く", "ゲートウェイを一時停止", "バージョン 0.1.500", "magpie を再起動", "magpie を終了"}) {
 		t.Errorf("ja: %+v", ja)
 	}
 	if l := trayMenuLabels("zh", "0.1.500", "0.1.501", false); l.restart != "重启以更新到 0.1.501" {
@@ -77,16 +77,6 @@ func TestTrayMenuLabels(t *testing.T) {
 		if l := trayMenuLabels(lang, "0.1.500", "", true); l.pause != want {
 			t.Errorf("%s paused: %q, want %q", lang, l.pause, want)
 		}
-	}
-	env := map[string]string{"LC_ALL": "C", "LANG": "zh_CN.UTF-8"}
-	if got := envLang(func(k string) string { return env[k] }); got != "zh_CN.UTF-8" {
-		t.Errorf("envLang skips C: %q", got)
-	}
-	if got := firstAppleLang("(\n    \"zh-Hans-CN\",\n    \"en-US\"\n)\n"); got != "zh-Hans-CN" {
-		t.Errorf("firstAppleLang: %q", got)
-	}
-	if got := firstAppleLang("(\n    en,\n    \"zh-Hans\"\n)\n"); got != "en" {
-		t.Errorf("firstAppleLang unquoted: %q", got)
 	}
 }
 

@@ -17,8 +17,8 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,6 +35,8 @@ import (
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/desktopiso"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
 	"github.com/yetone/magpie/internal/fx"
@@ -189,6 +191,23 @@ type fieldJSON struct {
 	// List is, in place of Options, which of the state's OptionLists the
 	// field offers, from 1 (shareOptions); 0 when Options is its own
 	List int `json:"list,omitempty"`
+	// Unserved are the user's routing groups a model field that offers
+	// groups doesn't, each with why (provider.UnservedGroups): its
+	// picker shows them, not to be picked
+	Unserved []unservedJSON `json:"unserved,omitempty"`
+}
+
+// unservedJSON is a routing group a model field doesn't offer: its value
+// as the field would take it, and why it isn't offered.
+type unservedJSON struct {
+	Value string   `json:"value"`
+	Label string   `json:"label"`
+	Icons []string `json:"icons,omitempty"`
+	Ref   string   `json:"ref"`
+	Why   string   `json:"why"`
+	// Pick: the gateway serves it, only the agent's lists leave it out;
+	// picked, it is put back in them (provider.ShowFor) and set
+	Pick bool `json:"pick,omitempty"`
 }
 
 type agentJSON struct {
@@ -197,6 +216,10 @@ type agentJSON struct {
 	Icon   string      `json:"icon"`
 	Path   string      `json:"path"`
 	Fields []fieldJSON `json:"fields"`
+	// Own: the user's own settings of the agent's (agent.Field.Own,
+	// Claude Code's permission mode), apart from Fields so no picker on
+	// its row draws them: agentcompact.js folds them under Advanced
+	Own []fieldJSON `json:"own,omitempty"`
 	// Drift: its config no longer does what magpie set, and how to set it again
 	Drift *agent.Drift `json:"drift,omitempty"`
 	// Wired: magpie is in its config, which its menu's Disconnect takes out
@@ -235,6 +258,9 @@ type agentJSON struct {
 	// Isolated: Claude Desktop's Claude Magpie app (#5671), only where it
 	// can be (macOS): whether it is on, and the app
 	Isolated *agent.DesktopIsolated `json:"isolated,omitempty"`
+	// TwinCode: this Claude Code folder is Claude Magpie's Code tab's,
+	// which is on magpie through Claude Magpie (agent.DesktopTwinCode)
+	TwinCode bool `json:"twinCode,omitempty"`
 	// Telemetry: the agent's own telemetry to its vendor, where magpie
 	// knows the switch for it (agent/telemetry.go)
 	Telemetry *agent.TelemetryState `json:"telemetry,omitempty"`
@@ -387,6 +413,19 @@ type fxJSON struct {
 	Rate  float64    `json:"rate"`
 	At    *time.Time `json:"at,omitempty"`
 	Stale bool       `json:"stale"`
+	// Yuan, with the currency "provider", are the providers whose costs
+	// are shown in yuan, as they sell in it (provider.PricesInYuan)
+	Yuan []string `json:"yuan,omitempty"`
+}
+
+// costFX is currentFX with, for the currency "provider", which providers'
+// costs are in yuan.
+func costFX(s settings.Settings) fxJSON {
+	out := currentFX()
+	if s.Currency == settings.CurrencyByProvider {
+		out.Yuan = provider.YuanPriced()
+	}
+	return out
 }
 
 // currentFX is the rate known now, never waited for: a stale one is asked
@@ -428,6 +467,9 @@ type settingsJSON struct {
 	PublicKind string `json:"publicKind,omitempty"`
 	// MAGPIE_ADDR, when it sets the gateway's address over Settings' port
 	AddrEnv string `json:"addrEnv,omitempty"`
+	// NameEnv is MAGPIE_NAME: what this magpie is called while Settings'
+	// Name is empty (settings.InstanceName)
+	NameEnv string `json:"nameEnv,omitempty"`
 	// MAGPIE_ALLOW_IPS, when it sets the allow list over Settings', and
 	// the list it sets; OnNetwork: MAGPIE_ADDR listens on the network, so
 	// the list is shown even while sharing is off
@@ -651,6 +693,9 @@ type searchAPIJSON struct {
 	Quota bool   `json:"quota,omitempty"`
 	// Off: switched off, kept but never asked (#2286)
 	Off bool `json:"off,omitempty"`
+	// Mix: asked together with the others marked so, their pages merged
+	// (provider.SearchAPI.Mix, #2845)
+	Mix bool `json:"mix,omitempty"`
 	// KeyList is each key in its order, masked, on or off, and resting
 	// (辰林鸭~ on Discord)
 	KeyList []searchKeyJSON `json:"keyList"`
@@ -717,7 +762,7 @@ func searchState(s *settingsJSON) {
 	}
 	s.SearchAPIs, s.SearchVendors = []searchAPIJSON{}, []searchVendorJSON{}
 	for _, a := range provider.StoredSearchAPIs() {
-		j := searchAPIJSON{Vendor: a.Vendor, Name: a.Name(), URL: a.URL, Ready: a.Ready(), Keys: len(a.Keys()), Pick: a.Pick, Quota: gateway.CanReadSearchQuota(a), Off: a.Off}
+		j := searchAPIJSON{Vendor: a.Vendor, Name: a.Name(), URL: a.URL, Ready: a.Ready(), Keys: len(a.Keys()), Pick: a.Pick, Quota: gateway.CanReadSearchQuota(a), Off: a.Off, Mix: a.Mix}
 		if a.Key != "" {
 			j.Key = a.MaskedKey()
 		}
@@ -832,7 +877,7 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 	if !ok && strings.HasPrefix(model, provider.GroupPrefix) {
 		e, ok = provider.EntryOf(model)
 	}
-	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || st.Working(e.Context) < e.Context {
+	if !ok || e.Context <= 0 || provider.CompactFor(st, e, provider.GroupFinder()) > 0 || codexcat.Working(st, e.ID, e.Context) < e.Context {
 		return nil
 	}
 	return &codexRunWindow{Model: model, Window: e.Context, Size: tokensSize(e.Context)}
@@ -841,6 +886,7 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
+	s.NameEnv = settings.EnvName()
 	s.Log = tilde(applog.Current())
 	s.Builtins = builtinsState()
 	s.PanelKeys = panelKeysState()
@@ -880,7 +926,7 @@ func settingsState() settingsJSON {
 		}
 		s.TerminalDefault = found.Default
 	}
-	s.FX = currentFX()
+	s.FX = costFX(s.Settings)
 	if (s.UsageAlert > 0 || s.BalanceAlert > 0 || s.ResetReminder > 0 || s.TurnDoneAlert > 0 || s.MaskAlert) && notifyProblem != nil {
 		s.NotifyProblem = notifyProblem()
 	}
@@ -1037,19 +1083,29 @@ var onDock func(settings.Settings)
 // assetTypes are the page's own files' types. The file server takes them
 // from Windows' registry, which another program may have changed — an SVG
 // served as something else draws no icon.
-var assetTypes = map[string]string{".svg": "image/svg+xml", ".png": "image/png", ".css": "text/css; charset=utf-8",
-	".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8"}
+var assetTypes = map[string]string{
+	".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+	".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+	".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
+	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+	".ico": "image/x-icon", ".webm": "video/webm", ".mp4": "video/mp4",
+	".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+	".txt": "text/plain; charset=utf-8", ".map": "application/json", ".wasm": "application/wasm",
+}
 
-// addAssetTypes is called by Handler, not init: the mime package reads
-// and parses the system's whole type table (/etc/apache2/mime.types,
-// ~18,000 allocations) the first time a type is added, and a launch that
-// serves no page (`magpie statusline` on every Claude Code message) never
-// needs it.
-var addAssetTypes = sync.OnceFunc(registerAssetTypes)
+// assetType is the type a file of magpie's own (or a plugin page's) is
+// served as, from assetTypes: "" for one it doesn't name.
+func assetType(name string) string { return assetTypes[strings.ToLower(path.Ext(name))] }
 
-func registerAssetTypes() {
-	for ext, t := range assetTypes {
-		mime.AddExtensionType(ext, t)
+// servedAs sets name's type on rw before http.ServeContent looks at the name.
+// Asked for a type, the mime package reads and parses the system's whole
+// table (/etc/apache2/mime.types, ~18,000 allocations) and keeps it for
+// good: ~2 MB of an idle tray magpie's live heap, from its first page.
+// And the system's table (Windows' registry, which another program may
+// have changed) never decides how the page's own files are read.
+func servedAs(rw http.ResponseWriter, name string) {
+	if t := assetType(name); t != "" && rw.Header().Get("Content-Type") == "" {
+		rw.Header().Set("Content-Type", t)
 	}
 }
 
@@ -1074,6 +1130,7 @@ func revalidated(next http.Handler) http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
+		servedAs(rw, name)
 		sum, page, ok := staticSum(name, r.URL.Path == "/")
 		if !ok {
 			next.ServeHTTP(rw, r)
@@ -1160,7 +1217,6 @@ func versionedPage(page []byte) []byte {
 // gw is the gateway this process serves, or nil when another magpie has it
 // (for now: see startBackend).
 func Handler(w Windows, gw *gateway.Server) http.Handler {
-	addAssetTypes()
 	if gw != nil {
 		served.Store(gw)
 	}
@@ -1180,6 +1236,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	devRoutes(mux)
 	pluginPageRoutes(mux, isWeb(w))
 	feedbackRoutes(mux)
+	appearanceRoutes(mux)
+	// the app's page closed or hidden: what its pages keep goes soon
+	// (awayPage); a write of nothing, so held's Changed passes it by
+	mux.HandleFunc("POST /api/page-away", func(rw http.ResponseWriter, r *http.Request) {
+		awayPage()
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -1209,6 +1272,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		if s.NoBird {
 			boot["noBird"] = true
+		}
+		// and what this magpie is called (Settings' Name, else MAGPIE_NAME),
+		// which a browser tab's title names from the first paint (starballl
+		// on X: several deployed, one title)
+		if n := settings.InstanceName(s); n != "" {
+			boot["name"] = n
+		}
+		if n := settings.EnvName(); n != "" {
+			boot["nameEnv"] = n
+		}
+		// and the title bar's pin, where the window can be kept on top
+		// (ontop.go): shown, and pressed, from the first paint
+		if pinnable(w) {
+			boot["pin"] = true
+			boot["onTop"] = s.OnTop
 		}
 		// a browser tab keeps its own font choice (fonts.js)
 		if !isWeb(w) {
@@ -1266,10 +1344,26 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if th, ok := omarchyTheme(); ok {
 			boot["omarchy"] = th
 		}
+		// and the accent and wallpaper of the user's own (appearance.go),
+		// drawn before the first paint
+		boot["look"] = lookKey(s)
 		b, _ := json.Marshal(boot)
 		rw.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		rw.Header().Set("Cache-Control", "no-store")
-		rw.Write(append(append([]byte("window.bootPrefs = "), b...), ";\n"...))
+		out := append(append([]byte("window.bootPrefs = "), b...), ";\n"...)
+		// a browser tab's title says the name from the first paint, set
+		// here so app.js's core carries no code for it (applyPrefs keeps
+		// it current); the app's windows keep "magpie"
+		if n, ok := boot["name"].(string); ok && isWeb(w) {
+			t, _ := json.Marshal(n + " · magpie")
+			out = append(append(append(out, "document.title = "...), t...), ";\n"...)
+		}
+		if css := lookCSS(s); css != "" {
+			c, _ := json.Marshal(css)
+			out = append(out, `(function(){var e=document.createElement("style");e.id="lookCSS";e.textContent=`...)
+			out = append(append(out, c...), ";document.head.appendChild(e)})();\n"...)
+		}
+		rw.Write(out)
 	})
 	// the Omarchy theme as it is now, asked again every few seconds so a
 	// theme picked in Omarchy's menu reaches the page at once; null off Omarchy
@@ -1339,7 +1433,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.HandleFunc("GET /api/drift", func(rw http.ResponseWriter, r *http.Request) {
 		out := map[string]*agent.Drift{}
 		for _, a := range agent.DetectedIn(heldAgents()) {
-			if d := a.Drift(); d != nil {
+			if d := a.DriftShown(); d != nil {
 				out[a.ID] = d
 			}
 		}
@@ -1417,6 +1511,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		home, _ := os.UserHomeDir()
 		if _, err := agent.SetDesktopIsolated(home, in.On); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
+	})
+	// its Code tab's Claude Code on a folder of its own, or back on
+	// ~/.claude (#6459): the app made again with the folder or without
+	mux.HandleFunc("POST /api/settings/desktop-isolated-claude", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ On bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		home, _ := os.UserHomeDir()
+		if err := agent.SetDesktopIsolatedClaude(home, in.On); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1615,6 +1724,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	sessionManageRoutes(mux, w)
 	backupRoutes(mux, w)
 	dataFolderRoutes(mux, w)
+	restartRoutes(mux, w)
 	mtlsRoutes(mux, w)
 	joinRoutes(mux)
 	httpsRoutes(mux, w)
@@ -1632,7 +1742,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		appPageRoutes(mux)
 		remoteRoutes(mux, w)
 	}
-	privacyModelRoutes(mux)
+	privacyModelRoutes(mux, w)
 	maskingRoutes(mux)
 	builtinRoutes(mux)
 	mux.HandleFunc("GET /api/settings", func(rw http.ResponseWriter, r *http.Request) {
@@ -1658,14 +1768,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			onDock(in)
 		}
 		// the cards the menu bar shows, any of them (TrayUsage is only the first),
-		// how often, with their logos or not, beside the bird or not, as
+		// how often, with their logos or not (Claude's or Anthropic's), beside the bird or not, as
 		// Windows' icon or not, and
 		// with their Pace numbers or not, with magpie's totals' cost or not,
 		// which of each subscription's windows, and the language the tooltip
-		// is in (yi_time)
+		// is in (yi_time), and the currency its totals' cost is in
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
-			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
-			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits) && onTrayUsage != nil {
+			in.TrayNoLogos != cur.TrayNoLogos || in.TrayAnthropicMark != cur.TrayAnthropicMark || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
+			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits ||
+			in.TrayCostIn() != cur.TrayCostIn()) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1784,7 +1895,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			Refused string `json:"refused,omitempty"`
 		}
 		if err := agent.SetTelemetryAll(in.Off); err != nil {
-			if settings.Load().AgentTelemetryOff != in.Off {
+			if settings.Shared().AgentTelemetryOff != in.Off {
 				fail(rw, err)
 				return
 			}
@@ -1826,6 +1937,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		s.UpdateSkip = strings.TrimSpace(in.Version)
 		if s.UpdateSkip != "" {
 			updates.quietAgain() // a dismissal holds for the quiet, not only the next release
+		} else {
+			updates.unhush() // Show again
 		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
@@ -1857,14 +1970,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	// whether the gateway's /v1/models lists each model by its id without
-	// the provider as well (settings.BareModelIDs, love1sbug on X)
+	// the provider as well (settings.BareModelIDs, love1sbug on X), or
+	// with only, by that id alone (BareModelIDsOnly, qQianye on X)
 	mux.HandleFunc("POST /api/settings/bare-ids", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ On bool }
+		var in struct{ On, Only bool }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
-		if err := provider.SetBareModelIDs(in.On); err != nil {
+		if err := provider.SetBareIDs(in.On, in.Only); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2075,7 +2189,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
-		pct := settings.Load().CodexAsyncCompactPercent
+		pct := settings.Shared().CodexAsyncCompactPercent
 		if in.Percent != nil {
 			pct = *in.Percent
 		}
@@ -2132,6 +2246,28 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// the model the Codex app's prompt suggestions go on: "" as Codex
+	// sends them, or a model's id (Codex's own setting turns them off)
+	mux.HandleFunc("POST /api/settings/codex-suggestions", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Model string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		v := strings.TrimSpace(in.Model)
+		if v != "" {
+			// a model or group magpie lists, not any name under a provider
+			if !slices.ContainsFunc(provider.Served(), func(e provider.Entry) bool { return e.ID == v || e.Group != "" && provider.SameRef(e.ID, v) }) {
+				fail(rw, fmt.Errorf("no model %s for Codex's prompt suggestions", v))
+				return
+			}
+		}
+		if err := provider.SetCodexSuggestionsModel(v); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// where Codex's requests for a thread's title go (#705): "" as Codex
 	// sends them, "off", or a model's id
 	// the models turned off for every request through magpie (#1867), each
@@ -2151,8 +2287,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// Settings › Proxy's Test (#2076): the address Cloudflare sees a request
 	// from through the proxy in force, and without it
 	mux.HandleFunc("POST /api/proxy/check", handleProxyCheck)
+	mux.HandleFunc("POST /api/egress/check", handleEgressCheck)
 	proxyRoutes(mux)
 	mux.HandleFunc("POST /api/pipelines/check", handlePipelineCheck)
+	mux.HandleFunc("POST /api/relay-check", handleRelayCheck)
 	mux.HandleFunc("POST /api/settings/codex-titles", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Model string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -2275,6 +2413,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		writeJSON(rw, map[string]bool{"ok": true})
+	})
+	// Warm up all: each of a Codex or Claude agent's accounts in use and not
+	// in a window already warmed at once, and what each came to
+	mux.HandleFunc("POST /api/warm-all", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Agent string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		rs, err := provider.WarmAll(r.Context(), in.Agent)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]any{"results": rs})
 	})
 	// whether a Codex account spends one of its resets by itself once its
 	// week is used up, the Usage card's toggle, set on its own
@@ -2671,6 +2824,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		// the menu bar leaves out what the Overview hides (trayShown): it
+		// follows a card hidden or shown again at once
+		if (in.CardsHidden != nil || in.WindowsHidden != nil) && onTrayUsage != nil {
+			onTrayUsage()
+		}
 		writeJSON(rw, settingsState())
 	})
 	mux.HandleFunc("POST /api/settings/login", func(rw http.ResponseWriter, r *http.Request) {
@@ -2961,13 +3119,16 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	// a web search API added, given a new key or address, switched on or
-	// off, or taken away; or the APIs put in a new order (#2286)
+	// off, or taken away; or the APIs put in a new order (#2286); or those
+	// asked together named (Mix: two or more, or none for one at a time,
+	// #2845)
 	mux.HandleFunc("POST /api/settings/search-api", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Vendor, Key, URL, Pick string
 			Remove                 bool
 			On                     *bool
 			Arrange                []string
+			Mix                    []string
 			// Append: the keys typed for an API added before go after its
 			// own, which stay, rather than in their place
 			Append bool
@@ -2980,6 +3141,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		switch {
 		case in.Arrange != nil:
 			err = provider.ArrangeSearchAPIs(in.Arrange)
+		case in.Mix != nil:
+			err = provider.MixSearchAPIs(in.Mix)
 		case in.Remove:
 			err = provider.RemoveSearchAPI(in.Vendor)
 		case in.On != nil:
@@ -3119,12 +3282,30 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.HandleFunc("GET /api/quit", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, map[string]any{"agents": quitAgents()})
 	})
+	// the question's Disconnect and quit: the agents put back as Put
+	// agents back when quitting puts them, for this quit (quitDisconnect)
+	mux.HandleFunc("POST /api/quit/disconnect", func(rw http.ResponseWriter, r *http.Request) {
+		if err := quitDisconnect(); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
+	})
 	mux.HandleFunc("POST /api/window/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("action") {
 		case "hide":
 			w.HidePanel()
 		case "main":
 			w.ShowMain(mainView(r.URL.Query()))
+		case "ontop":
+			// the title bar's pin (ontop.go)
+			on := r.URL.Query().Get("on") == "1"
+			if err := pinMain(w, on); err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, map[string]bool{"onTop": on})
+			return
 		case "quit":
 			// the question's "Don't ask again" (noAsk=1, zhujiu on
 			// Discord) is saved before the quit; a save that fails keeps
@@ -3207,7 +3388,7 @@ func held(h http.Handler) http.Handler {
 			// 5x the CPU.
 			defer tightenGC()()
 		}
-		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" {
+		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" && r.URL.Path != "/api/page-away" {
 			// anything that may have written drops what was held, once it
 			// has answered with it (a page's word of input writes nothing)
 			defer provider.Changed()
@@ -3216,13 +3397,22 @@ func held(h http.Handler) http.Handler {
 	})
 }
 
+// stateSettings is s without the credentials Settings' own read keeps on
+// disk (settingsState), for /api/state, which is polled, and the start's
+// read of the last one (lastKnown), which puts today's settings in it
+func stateSettings(s settings.Settings) settings.Settings {
+	s.Proxies, s.LANKey, s.BarkKey, s.GitHubToken = nil, "", "", ""
+	return s
+}
+
 func state() stateJSON {
 	s := stateJSON{Agents: []agentJSON{}, Profiles: []profileJSON{}, Catalog: catalog.Source(), Settings: settings.Shared()} // only encoded, never changed
+	s.Settings = stateSettings(s.Settings)
 	// state() is asked for after nearly every click, so the rate — a
 	// network fetch once every TTL — is only worth its rare latency when
 	// cny is actually chosen; usd never looks at it
-	if s.Settings.Currency == "cny" {
-		s.FX = currentFX()
+	if s.Settings.Currency != "usd" {
+		s.FX = costFX(s.Settings)
 	}
 	s.Unlisted = unlistedModels()
 	s.CLIBehind = cliBehind()
@@ -3248,7 +3438,7 @@ func state() stateJSON {
 		}
 		vals := a.Values()
 		now[a.ID] = vals
-		aj := agentJSON{ID: a.ID, Name: a.Name, Icon: a.Icon, Path: tilde(a.Path), Fields: agentFields(a, vals)}
+		aj := agentJSON{ID: a.ID, Name: a.Name, Icon: a.Icon, Path: tilde(a.Path), Fields: agentFields(a, vals), Own: ownFields(a, vals)}
 		aj.Models = agentModelCount(a, aj.Fields)
 		aj.Menu = a.ListsModels
 		aj.NoNames = a.NoNames
@@ -3274,7 +3464,18 @@ func state() stateJSON {
 		if a.ID == "claude-desktop" && a.WSL == "" {
 			if iso, ok := agent.DesktopIsolatedHere(); ok {
 				aj.Isolated = &iso
+				// while Claude Magpie is on, the row's switch wires it
+				// alone (desktopSets) and the user's own Desktop stays
+				// signed in with Anthropic: the row is Claude Magpie's.
+				// Named Claude Desktop, it read as if their own Desktop
+				// had been connected (xMopf7RF on X, 0.1.4111)
+				if iso.On {
+					aj.Name = desktopiso.Name
+				}
 			}
+		}
+		if !aj.Wired && agent.DesktopTwinCode(a) {
+			aj.TwinCode = true
 		}
 		if a.Telemetry != nil {
 			// Settings › Privacy's switch for every agent reaches one
@@ -3349,7 +3550,7 @@ type signInOpened struct {
 // it went for signInOpened. linkOnly is this sign-in alone kept to its link
 // (the window's "Sign in on another computer"), whatever the setting.
 func openSignIn(w Windows, st provider.SignInState, linkOnly bool) signInOpened {
-	if linkOnly || settings.Load().SignInLinkOnly {
+	if linkOnly || settings.Shared().SignInLinkOnly {
 		return signInOpened{SignInState: st, LinkOnly: true}
 	}
 	var failed string
@@ -3363,6 +3564,22 @@ func openSignIn(w Windows, st provider.SignInState, linkOnly bool) signInOpened 
 type mcpSignInOpened struct {
 	mcpauth.State
 	OpenError string `json:"openError,omitempty"`
+	LinkOnly  bool   `json:"linkOnly,omitempty"`
+}
+
+// openMCPSignIn is openSignIn for a sign-in to an MCP server: kept to its
+// link when the user keeps sign-in pages to a browser of their own
+// (settings.SignInLinkOnly), as an account's is. It opened the page in the
+// default browser whatever the setting (hkxhkxhkx on X).
+func openMCPSignIn(w Windows, st mcpauth.State) mcpSignInOpened {
+	if settings.Shared().SignInLinkOnly {
+		return mcpSignInOpened{State: st, LinkOnly: true}
+	}
+	if u, err := url.Parse(st.URL); st.URL != "" && (err != nil || !mcpauth.WebURL(u)) {
+		// the server named it: only a web page is handed to the system
+		return mcpSignInOpened{State: st, OpenError: "not a web page"}
+	}
+	return mcpSignInOpened{State: st, OpenError: openError(w, st.URL)}
 }
 
 // openError opens url in the browser, and says why it didn't open: "" when
@@ -3594,6 +3811,25 @@ func fail(rw http.ResponseWriter, err error) {
 			out["code"], out["blocked"] = "config_blocked", b
 		}
 	}
+	// a proxy's failure magpie can explain (netproxy.Why), said in the
+	// reader's language, Go's words beside it
+	var why *netproxy.Why
+	if errors.As(err, &why) {
+		out["code"], out["why"], out["addr"], out["was"], out["now"] = "proxy_why", why.Why, why.Addr, why.Was, why.Now
+		if why.Err != nil {
+			out["detail"] = redactProxyErr(why.Err.Error())
+		}
+	}
+	// a remote MCP server whose sign-in magpie never got an answer from:
+	// the network, said in the reader's language with the way it went,
+	// not Go's words alone (CHENGJIAHEGOXIS on X)
+	var unreachable *mcpauth.UnreachableError
+	if errors.As(err, &unreachable) {
+		out["code"], out["host"], out["proxy"] = "unreachable", unreachable.Host, unreachable.Proxy
+		out["detail"] = redactProxyErr(unreachable.Err.Error())
+		out["error"] = redactProxyErr(out["error"])
+		out["said"] = unreachableSaid[unreachable.Proxy != ""]
+	}
 	var noModels *agent.NoModelsError
 	if errors.As(err, &noModels) {
 		out["code"] = "no_models"
@@ -3723,6 +3959,15 @@ func countClient(m map[string]string, client, as string) (map[string]string, err
 var bunSaid = map[string]string{
 	"windows": "Bun, which runs plugins, can't start on this version of Windows: it needs Windows 10 version 1809 or later, or Windows Server 2019 or later. Update Windows to use plugins, or set MAGPIE_BUN to a bun that runs here.",
 	"cpu":     "Bun, which runs plugins, can't start on this computer's processor: it needs an x64 processor with SSE4.2 (Intel or AMD from 2008 on; in a virtual machine, a CPU type that passes it through). Run magpie on such a processor to use plugins, or set MAGPIE_BUN to a bun that runs here.",
+}
+
+// unreachableSaid is what the page says for a remote MCP server magpie
+// got no answer from when starting its sign-in, by whether the request
+// went through a proxy: an i18n.js key like bunSaid's, with {host},
+// {proxy} and {detail} filled from the reply
+var unreachableSaid = map[bool]string{
+	false: "magpie got no answer from {host}, going direct with no proxy, so the sign-in couldn't start. The server's sign-in isn't the problem: the network between this computer and {host} is. Give magpie a proxy in Settings › Network and sharing, or try another network, then click Sign in again ({detail})",
+	true:  "magpie got no answer from {host} through the proxy {proxy}, so the sign-in couldn't start. The server's sign-in isn't the problem: the way to {host} is. Check that the proxy reaches {host}, or pick another in Settings › Network and sharing, then click Sign in again ({detail})",
 }
 
 // linkSaid is what the page says for an app's import link that nothing

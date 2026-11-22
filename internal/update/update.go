@@ -38,6 +38,7 @@ import (
 	"github.com/yetone/magpie/internal/rosetta"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/source"
+	"github.com/yetone/magpie/internal/winarm"
 )
 
 // Site is magpie's home; its /api/latest is the update feed.
@@ -114,7 +115,7 @@ func proxied() http.RoundTripper {
 type updateProxy struct{ http.RoundTripper }
 
 func (u updateProxy) RoundTrip(req *http.Request) (*http.Response, error) {
-	if c := strings.TrimSpace(settings.Load().UpdateProxy); c != "" && netproxy.Choice(req.Context()) == "" {
+	if c := strings.TrimSpace(settings.Shared().UpdateProxy); c != "" && netproxy.Choice(req.Context()) == "" {
 		req = req.WithContext(netproxy.With(req.Context(), c))
 	}
 	return u.RoundTripper.RoundTrip(req)
@@ -141,6 +142,21 @@ func LatestIn(ctx context.Context, lang string) (*Release, error) {
 // what Stable's "up to date" leaves out, the newest release out.
 func LatestEvery(ctx context.Context, lang string) (*Release, error) {
 	return latestAt(ctx, withLang(Feed(), lang), lang)
+}
+
+// LatestStable is the Stable channel's release, whatever Settings'
+// channel: what a fresh install compares itself with, to stay on Stable
+// when it is Stable's version (the site's Stable download). Only the site
+// knows it, so a failed feed is never answered from GitHub.
+func LatestStable(ctx context.Context) (*Release, error) {
+	u, err := url.Parse(Feed())
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("channel", settings.UpdateStable)
+	u.RawQuery = q.Encode()
+	return latestFrom(ctx, u.String(), "")
 }
 
 func latestAt(ctx context.Context, feed, lang string) (*Release, error) {
@@ -289,11 +305,13 @@ func parse(v string) *semver {
 // one.
 var GUI bool
 
-// goos and goarch are the system this magpie was built for, and
-// translated says it runs under Rosetta; tests set them.
+// goos and goarch are the system this magpie was built for, translated
+// says it runs under Rosetta, and emulated under Windows on Arm's x64
+// emulation; tests set them.
 var (
 	goos, goarch = runtime.GOOS, runtime.GOARCH
 	translated   = rosetta.Translated
+	emulated     = winarm.Emulated
 )
 
 // arch is the architecture an update installs: this build's, but Apple
@@ -303,8 +321,14 @@ var (
 // fetched the Intel build again. Installing Apple silicon's is the same
 // swap: the zip's magpie.app is renamed over the bundle, signed by the
 // same team (sameSigner), and the bare binary is renamed over itself.
+//
+// The same on Windows: an x64 magpie on an Arm64 computer, emulated,
+// updates to the arm64 exe (@EV_John_Liu on X, "magpie是转译的"). The swap
+// is the x64 one: canStart starts the download, which runs natively there,
+// the running exe is moved aside and the arm64 one renamed in under its
+// name, and magpie.com is written again from the new app's own launcher.
 func arch() string {
-	if goos == "darwin" && goarch == "amd64" && translated() {
+	if goarch == "amd64" && (goos == "darwin" && translated() || goos == "windows" && emulated()) {
 		return "arm64"
 	}
 	return goarch
@@ -348,13 +372,24 @@ func Homebrew(exe string) bool {
 	return strings.Contains(filepath.ToSlash(exe), "/Cellar/magpie/")
 }
 
-// Executable is the running binary, symlinks resolved.
+// Executable is the running binary, symlinks resolved. When they can't be
+// (Go's EvalSymlinks fails on the current junction Scoop runs an app from,
+// "The system cannot find the path specified"), it is the path the binary
+// was started from, which still names it.
 func Executable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(exe)
+	return resolved(exe), nil
+}
+
+// resolved is path with its symlinks resolved, or path when that fails.
+func resolved(path string) string {
+	if p, err := filepath.EvalSymlinks(path); err == nil {
+		return p
+	}
+	return path
 }
 
 // Writable reports whether magpie may replace what lives in dir.
@@ -1140,7 +1175,7 @@ func RelaunchArgs(window bool, view string) []string {
 }
 
 // AwaitPredecessor blocks, for a while at most, until the magpie that
-// relaunched this one has exited.
+// relaunched this one has exited; on Windows its WebView2 too (awaitGone).
 func AwaitPredecessor() {
 	reportStarted() // first: the one that started this waits for it
 	pid, err := strconv.Atoi(os.Getenv("MAGPIE_REPLACES"))
@@ -1148,9 +1183,7 @@ func AwaitPredecessor() {
 	if err != nil || pid <= 0 {
 		return
 	}
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline) && alive(pid); {
-		time.Sleep(100 * time.Millisecond)
-	}
+	awaitGone(pid)
 }
 
 type progressKey struct{}

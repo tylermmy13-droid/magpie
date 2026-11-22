@@ -90,7 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     for (const [lang, name, sub] of [
       ["en", "Menu bar cost", "What magpie's requests cost, beside their tokens in the menu bar and its tooltip; off, the tokens alone"],
-      ["zh", "菜单栏金额", "magpie 请求的花费，显示在菜单栏和提示中的 token 数旁；关闭则只显示 token 数"],
+      ["zh", "菜单栏显示费用", "magpie 请求的花费，显示在菜单栏和提示中的 token 数旁；关闭则只显示 token 数"],
       ["zh-TW", "選單列金額", "magpie 請求的花費，顯示在選單列與提示中的 token 數旁；關閉則只顯示 token 數"],
       ["ja", "メニューバーの金額", "magpie のリクエストの費用を、メニューバーとツールチップのトークン数の横に表示します。オフにするとトークン数だけになります"],
       ["de", "Kosten in der Menüleiste", "Was die Anfragen über magpie kosten, neben ihren Tokens in der Menüleiste und ihrem Tooltip; aus, nur die Tokens"],

@@ -117,7 +117,7 @@ window.ciAtFill = function (row, s) {
   const save = (v) => savePrefs({ ...prefsKeep(s), checkinAt: v });
   const who = el("div", "who");
   const sub = el("div", "sub", at ? t("From {at} each day, for every vendor's check-in", { at }) : t("As soon as each vendor's day starts"));
-  sub.title = t("A computer asleep then checks in when it wakes.");
+  sub.title = t("If this computer is asleep at check-in time, it checks in when it wakes.");
   who.append(el("div", "name", t("Check-in time")), sub);
   const box = el("div", "warm-at" + (at ? " times" : ""));
   if (at) {

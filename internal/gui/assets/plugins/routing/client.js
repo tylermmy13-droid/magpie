@@ -314,7 +314,7 @@ function routingPage(part) {
   // the names would not sit over their parts, so it is left out (CSS)
   const colHead = el("div", "rt-req-cols");
   colHead.setAttribute("aria-hidden", "true");
-  const colNames = ["Time", "From · model asked for", "Where it was sent", "Time taken · usage"].map((k) => {
+  const colNames = ["Time", "Source · requested model", "Routing destination", "Duration · usage"].map((k) => {
     const s = el("span");
     s.dataset.label = k;
     colHead.append(s);
@@ -359,7 +359,7 @@ function routingPage(part) {
     return b;
   });
   flowMore.onclick = () => { flowAll = !flowAll; steady(() => renderFlow(listed())); };
-  const flowColNames = ["Sent by", "Where it was sent", "Requests", "How it ended"].map((k) => {
+  const flowColNames = ["Request source", "Routing destination", "Requests", "Routing outcome"].map((k) => {
     const s = el("span");
     s.dataset.label = k;
     flowCols.append(s);
@@ -409,7 +409,7 @@ function routingPage(part) {
     if (sig === flowSig) return;
     flowSig = sig;
     setText(flowTitle, t("Where requests go"));
-    setText(flowSub, t("who sent them, and where magpie sent each"));
+    setText(flowSub, t("Request sources and destinations"));
     flowButtons.forEach((b) => {
       setText(b, t(b.dataset.label));
       b.classList.toggle("on", flowMode === b.dataset.by);
@@ -430,7 +430,7 @@ function routingPage(part) {
       for (const d of [...src.dests.values()].sort((a, b) => b.n - a.n)) {
         const b = el("button", "rt-flow-dst" + (d.bad ? " bad" : d.wait ? " wait" : ""));
         b.type = "button";
-        b.title = t("Show the latest request sent here");
+        b.title = t("Open the latest request to this destination");
         b.onclick = () => steady(() => pick(d.r)); // the stage below is drawn again: the page stays where it is
         const to1 = el("span", "fto");
         to1.append(el("span", "arrow", "→"), ...(d.w ? [icon(logoOf(d.w))] : []), el("span", "fnm", d.name), ...(d.model ? [el("code", "", d.model)] : []));
@@ -1663,13 +1663,25 @@ function routingPage(part) {
   // what it adds to the same 429 for Codex's own GPT-5 system prompt, which
   // a thread begun on a GPT model keeps after a switch (antigravityCodexHint)
   const AG_CODEX = "Antigravity answers this 429 to Codex's own system prompt for GPT-5 models whatever quota is left, so it is not a quota and waiting won't help; a Codex chat begun on a GPT model keeps that prompt after a model switch or a fork, so start a new chat on this model";
-  // what it adds to the same 429 for Hermes Agent's earlier default persona
-  // (antigravityHermesHint)
-  const AG_HERMES = "Antigravity answers this 429 to Hermes Agent's earlier default persona (its SOUL.md) whatever quota is left, so it is not a quota and waiting won't help; Hermes' current default persona goes through, so put it in SOUL.md, or use another provider for these chats";
+  // what it adds to the same 429 for Hermes Agent's persona, today's or the
+  // earlier one (antigravityHermesHint)
+  const AG_HERMES = "Antigravity answers this 429 to Hermes Agent's default persona (\"You are Hermes Agent, …\" in its SOUL.md), the current one and the earlier one alike, whatever quota is left, so it is not a quota and waiting won't help; magpie sends it as \"You're Hermes Agent, …\", which goes through, so start SOUL.md another way, or use another provider for these chats";
+  // ... for OpenCode's prompts (antigravityOpenCodeHint)
+  const AG_OPENCODE = "Antigravity answers this 429 to OpenCode's system prompt (\"You are OpenCode, …\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're OpenCode, …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group";
+  // ... for Codex's prompt for a model it has none of its own for
+  // (antigravityCodexCLIHint)
+  const AG_CODEX_CLI = "Antigravity answers this 429 to Codex's prompt for a model it has none of its own for (\"You are a coding agent running in the Codex CLI\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"You're …\", which goes through, so use another provider for these chats, or put one after Antigravity in a routing group";
+  // ... for pi's default prompt (antigravityPiHint)
+  const AG_PI = "Antigravity answers this 429 to pi's default system prompt (\"You are a coding assistant running inside pi\") whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"running within pi\", which goes through, so give pi a system prompt of your own (--system-prompt) or use another provider for these chats";
+  // what it adds to the same 429 for oh-my-pi's RFC 2119 line
+  // (antigravityRFCHint)
+  const AG_RFC = "Antigravity answers this 429 to the line \"RFC 2119 keywords: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.\" that starts oh-my-pi (omp)'s system prompt, and to any prompt that has it, whatever quota is left, so it is not a quota and waiting won't help; magpie sends that line as \"RFC 2119 key words: …\", which goes through, so this one came from a copy of it that was worded another way";
+  // Older traces keep the gateway’s original wording.
+  const AG_HERMES_OLD = "Antigravity answers this 429 to Hermes Agent's earlier default persona (its SOUL.md) whatever quota is left, so it is not a quota and waiting won't help; Hermes' current default persona goes through, so put it in SOUL.md, or use another provider for these chats";
   // what it adds to WorkBuddy's 403 11140 for an account it restricted
   // (provider.WBRestrictedHint, #1849)
   const WB_RESTRICTED = "WorkBuddy restricted this account for unusual activity; it stays out until WorkBuddy lifts that, which an appeal (Submit feedback in WorkBuddy) asks for";
-  const HINTS = [WB_REFUSED, BLOCKED, ZCODE_BLOCKED, AG_TURNED_AWAY, AG_CODEX, AG_HERMES, WB_RESTRICTED];
+  const HINTS = [WB_REFUSED, BLOCKED, ZCODE_BLOCKED, AG_TURNED_AWAY, AG_CODEX, AG_HERMES, AG_HERMES_OLD, AG_OPENCODE, AG_CODEX_CLI, AG_PI, AG_RFC, WB_RESTRICTED];
 
   function trySaid(r, i) {
     const tr = r.tries[i], w = tried(r, tr), agent = agentName(r.agent);

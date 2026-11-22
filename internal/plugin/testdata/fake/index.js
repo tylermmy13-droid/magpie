@@ -93,6 +93,10 @@ export const FakePlugin = async ({ client }) => ({
     // a model's -fast (=tier: see the models hook)
     if (process.env.FAKE_FAST === "1") cfg.provider[ID].models["fake-1-fast"] = { name: "Fake One Fast", limit: { context: 1000, output: 100 } }
     if (process.env.FAKE_RESPONSES) cfg.provider[ID].models["fake-resp"] = { name: "Fake Responses", provider: { npm: "@ai-sdk/openai" }, limit: { context: 4000, output: 400 } }
+    // $FAKE_ALSO: a model on chat completions whose vendor serves it on
+    // Responses and Anthropic's messages too, as Open Design's amr-link
+    // serves every model (plugins#888)
+    if (process.env.FAKE_ALSO) cfg.provider[ID].models["fake-also"] = { name: "Fake Also", also: ["@ai-sdk/anthropic", "@ai-sdk/openai"], limit: { context: 4000, output: 400 } }
     // $FAKE_GROK: a Grok model on Responses, as Grok's plugin serves it
     if (process.env.FAKE_GROK) cfg.provider[ID].models["grok-4.7"] = { name: "Grok 4.7", provider: { npm: "@ai-sdk/openai" }, limit: { context: 4000, output: 400 } }
     // $FAKE_SENSENOVA: SenseNova's image model as its plugin lists it from
@@ -260,7 +264,7 @@ export const FakePlugin = async ({ client }) => ({
         // where magpie said the agent works, as the plugin read it; its own
         // headers go on too, as a plugin that sends on what it got sends
         // them, for the host to take off
-        for (const k of ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent", "x-magpie-effort"]) if (h.has(k)) h.set("x-saw-" + k.slice(9), h.get(k))
+        for (const k of ["x-magpie-work-dir", "x-magpie-work-git", "x-magpie-fallback", "x-magpie-session", "x-magpie-subagent", "x-magpie-effort", "x-magpie-caller-agent", "x-magpie-caller-name", "x-magpie-caller-via"]) if (h.has(k)) h.set("x-saw-" + k.slice(9), h.get(k))
         // $FAKE_QUEUE: that model is queued at the vendor, as Qoder's free
         // models are: waited out (here until magpie gives up) unless magpie
         // said it needn't be, then said at once with the queue's 503
@@ -491,5 +495,8 @@ export const FakePlugin = async ({ client }) => ({
   },
   "chat.headers": async (input, output) => {
     if (input.model.providerID === ID) output.headers["x-plugin-model"] = input.model.id
+    // who asked, as magpie told the hook (input.caller), beside OpenCode's
+    // own agent
+    if (input.caller) output.headers["x-saw-hook-caller"] = encodeURIComponent(JSON.stringify({ agent: input.agent, caller: input.caller }))
   },
 })

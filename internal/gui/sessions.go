@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -54,14 +55,7 @@ type sessionsJSON struct {
 // page and a detail (MergeExternal) never read them, and copying every
 // session's days for each poll of an open Sessions page was ~1.8 GB in 4
 // minutes over ~720k calls (#2776). The stats add them (gatewayDays).
-func gatewayExternal(g usage.GatewaySession) sessions.ExternalSession {
-	e := sessions.ExternalSession{Agent: g.Agent, ID: g.ID, Start: g.Start, Last: g.Last, Tokens: g.Tokens, Cost: g.Cost, Unpriced: g.Unpriced}
-	e.Models = make([]sessions.ExternalModel, 0, len(g.Models))
-	for _, m := range g.Models {
-		e.Models = append(e.Models, sessions.ExternalModel{Model: m.Model, Tokens: m.Tokens, Cost: m.Cost, Priced: m.Priced})
-	}
-	return e
-}
+func gatewayExternal(g usage.GatewaySession) sessions.ExternalSession { return g.External() }
 
 // gatewayDays is a gateway session's usage by day, as the stats count it.
 func gatewayDays(g usage.GatewaySession) []sessions.ExternalDayUsage {
@@ -90,21 +84,7 @@ func gatewayListed(g usage.GatewaySession, title func(agent, id string) string) 
 // ~150 MB, and each was looked for in the store of what was asked
 // (GatewayTitler).
 func listedExternal(nativeKeys map[string]bool, n int) []sessions.ExternalSession {
-	hidden := sessions.GatewayHidden()
-	title := sessions.GatewayTitler()
-	var ext []sessions.ExternalSession
-	usage.EachGatewaySession(nativeKeys, func(g usage.GatewaySession) bool {
-		if len(ext) == n {
-			return false
-		}
-		// one a list leaves out (externalSessions) takes no room; nor does
-		// one that spent nothing, with no file behind it (SpentNothing)
-		if g.Agent != "" && g.ID != "" && !hidden(g.Agent, g.ID, g.Last) && !g.SpentNothing() {
-			ext = append(ext, gatewayListed(g, title))
-		}
-		return true
-	})
-	return ext
+	return usage.ListedGateway(nativeKeys, n)
 }
 
 func gatewaySession(g usage.GatewaySession) sessions.Session {
@@ -336,7 +316,12 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		}
 		// sub: one of its subagents, found among those the session lists
 		// (#2261)
+		// find: the words a search found in it, so that the part they
+		// are in is among those read (a long session's is cut)
 		read := sessions.TranscriptOf
+		if find := sessions.NeedleOf(q.Get("find")); find != "" {
+			read = func(s sessions.Session) (sessions.Transcript, error) { return sessions.TranscriptAt(s, find) }
+		}
 		if sub := q.Get("sub"); sub != "" {
 			read = func(s sessions.Session) (sessions.Transcript, error) { return sessions.SubagentTranscript(s, sub) }
 		}
@@ -406,7 +391,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		if err := openTerminal(run, s.Title, settings.Load().SessionTerminal); err != nil {
+		if err := openTerminal(run, s.Title, settings.Shared().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -452,7 +437,43 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no command starts this agent"))
 			return
 		}
-		if err := agentTerminal(run, name, settings.Load().SessionTerminal); err != nil {
+		if err := agentTerminal(run, name, settings.Shared().SessionTerminal); err != nil {
+			fail(rw, err)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
+	// agents/reveal shows an agent's settings file, the one magpie writes,
+	// in the file manager, from its row's menu (InkCoalW on X: its whole
+	// file at hand, as CC Switch has it). The page sends only the agent's
+	// id; the path is the agent's as detected, never one the page names.
+	mux.HandleFunc("POST /api/agents/reveal", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Agent string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if isWeb(w) {
+			fail(rw, errors.New("showing a file is only for the desktop app"))
+			return
+		}
+		path := ""
+		for _, a := range agent.Detected() {
+			if a.ID == in.Agent {
+				path = a.Path
+			}
+		}
+		if path == "" {
+			fail(rw, errors.New("no settings file for this agent"))
+			return
+		}
+		var err error
+		if _, e := os.Stat(path); e == nil {
+			err = revealIn(w, path)
+		} else {
+			err = w.OpenFolder(filepath.Dir(path))
+		}
+		if err != nil {
 			fail(rw, err)
 			return
 		}
@@ -487,7 +508,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		if in.Open {
-			if err := openTerminal(c.Command, s.Title, settings.Load().SessionTerminal); err != nil {
+			if err := openTerminal(c.Command, s.Title, settings.Shared().SessionTerminal); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -858,12 +879,21 @@ func keepStatsWhileAsked() {
 // hands the pages back to the system at once; a range being read again
 // puts it off.
 func forgetIdleStats() {
+	if !letGoStats() {
+		keepStatsWhileAsked()
+		return
+	}
+	debug.FreeOSMemory()
+}
+
+// letGoStats is forgetIdleStats' letting go, which a range being read
+// puts off: it says whether they went.
+func letGoStats() bool {
 	statsMemo.Lock()
 	for _, k := range statsMemo.m {
 		if k.busy {
 			statsMemo.Unlock()
-			keepStatsWhileAsked()
-			return
+			return false
 		}
 	}
 	statsMemo.m = nil
@@ -875,7 +905,7 @@ func forgetIdleStats() {
 	statsTags.m = nil
 	statsTags.Unlock()
 	sessions.ForgetKeptRanges()
-	debug.FreeOSMemory()
+	return true
 }
 
 func combinedSessionStats(days int) sessions.Stats {
@@ -1078,6 +1108,7 @@ var tightGC struct {
 	was    int  // GOGC before the first
 	hooked bool // a retightenGC is waiting for the next collection
 	steady bool // steadyGCStart has run: retightenGC sets steadyPercent between reads
+	procs  bool // the first read narrowed GOMAXPROCS (narrowProcs); the last widens it
 }
 
 // tightenGC begins a read under a tight GC; undo ends it.
@@ -1090,6 +1121,7 @@ func tightenGC() (undo func()) {
 			debug.SetGCPercent(was)
 		}
 		tightGC.was = was
+		tightGC.procs = narrowProcs()
 		if tightGCRoom > 0 && !tightGC.hooked {
 			tightGC.hooked = true
 			afterNextGC(retightenGC)
@@ -1101,8 +1133,32 @@ func tightenGC() (undo func()) {
 		defer tightGC.Unlock()
 		if tightGC.n--; tightGC.n == 0 {
 			debug.SetGCPercent(tightGC.was)
+			if tightGC.procs {
+				tightGC.procs = false
+				runtime.SetDefaultGOMAXPROCS()
+			}
 		}
 	})
+}
+
+// tightProcs is the GOMAXPROCS a read under a tight GC runs with. A
+// collection every few MB wakes a thread on each idle P to mark (Go's idle
+// mark workers) and, with the reads' own workers, keeps them spinning
+// between: on an 18-core Mac a rebuild of the request index (a new catalog
+// price) spent ~2 s in pthread_cond_signal, ~1 s in usleep and ~0.5 s in
+// pthread_kill of its ~16 s. The reads use four workers each
+// (prefetchEach) or up to eight (decodeCache), and gain nothing from more.
+const tightProcs = 4
+
+// narrowProcs sets GOMAXPROCS to tightProcs, when it is more and the user
+// set none (GOMAXPROCS in the environment is theirs), and reports whether
+// it did: the last read under a tight GC then puts back Go's default.
+func narrowProcs() bool {
+	if os.Getenv("GOMAXPROCS") != "" || runtime.GOMAXPROCS(0) <= tightProcs {
+		return false
+	}
+	runtime.GOMAXPROCS(tightProcs)
+	return true
 }
 
 // tightGCPercent is a tenth. Under a quarter, a first start's footprint
@@ -1231,7 +1287,7 @@ func agentCommand(a *agent.Agent) string {
 // the app where one is installed, unless the setting codexOpen asks for the
 // terminal (Yink88564391 on X).
 func codexOpensApp() bool {
-	return settings.Load().CodexOpen != "terminal" && codexAppInstalled()
+	return settings.Shared().CodexOpen != "terminal" && codexAppInstalled()
 }
 
 // codexAppInstalled and codexAppOpener are the agent package's, vars so a

@@ -263,6 +263,15 @@ type ModelSpeed struct {
 	Name string `json:"name"`
 }
 
+// ProviderSpeed is a usage.ProviderSpeed with the names the page shows
+// the model and provider by, and the provider's icon.
+type ProviderSpeed struct {
+	usage.ProviderSpeed
+	Name         string `json:"name"`
+	ProviderName string `json:"provider_name"`
+	Icon         string `json:"icon,omitempty"`
+}
+
 type Ledger struct {
 	CallerKeys []Group      `json:"callerKeys"`
 	Period     usage.Period `json:"period"`
@@ -279,6 +288,10 @@ type Ledger struct {
 	By      map[string][]Share `json:"by"`
 	ChartBy map[string][]Share `json:"chartBy,omitempty"`
 	Day     string             `json:"day,omitempty"`
+	// Provider is the one provider the filter keeps, if any: every cost
+	// of the page is of its calls alone, so a page whose currency is "by
+	// provider" shows them in what that provider sells in
+	Provider string `json:"provider,omitempty"`
 	usage.Totals
 	// Through and Direct: the rows the gateway served, and the rows read
 	// from the agents' own session files, which it never saw. Totals is
@@ -301,6 +314,9 @@ type Ledger struct {
 	// Speeds: the models of the rows the filter keeps by the median speed
 	// of their requests and of their wait for the first token (usage.ModelSpeed)
 	Speeds []ModelSpeed `json:"speeds"`
+	// ProviderSpeeds: the same models on each provider they were tried
+	// on, with how the tries went (usage.ProviderSpeed)
+	ProviderSpeeds []ProviderSpeed `json:"provider_speeds"`
 	// SpeedMin is the fewest output tokens a request wrote to count in it
 	SpeedMin int `json:"speed_min"`
 	// BigWrite: the request that wrote the most to the cache, of the rows
@@ -412,6 +428,7 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 	out.Purposes = l.Purposes
 	out.BigWrite = l.Big
 	out.Day = f.Day
+	out.Provider = f.Provider
 	out.CallerKeys = inKeyOrder(callerGroups(usage.Summary{CallerKeys: l.CallerKeys}))
 	callerLabels := map[string]string{}
 	for _, g := range out.CallerKeys {
@@ -491,6 +508,15 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 			name = pub(name)
 		}
 		out.Speeds = append(out.Speeds, ModelSpeed{ModelSpeed: s, Name: name})
+	}
+	out.ProviderSpeeds = []ProviderSpeed{}
+	for _, s := range l.ProviderSpeeds {
+		name := s.Model
+		if pub != nil {
+			name = pub(name)
+		}
+		a := which(s.Provider)
+		out.ProviderSpeeds = append(out.ProviderSpeeds, ProviderSpeed{ProviderSpeed: s, Name: name, ProviderName: a.Name, Icon: a.Icon})
 	}
 	for _, s := range l.Computers {
 		ls := Share{Share: s, Name: l.Names[s.ID]}
